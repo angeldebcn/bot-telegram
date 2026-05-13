@@ -57,6 +57,16 @@ CREATE TABLE IF NOT EXISTS chat_config (
     filter_forwarded        INTEGER NOT NULL DEFAULT 0,
     filter_caps             INTEGER NOT NULL DEFAULT 0,
     filter_links            INTEGER NOT NULL DEFAULT 0,
+    -- Tipos sujetos a las 3 reglas (1 = sí, 0 = no)
+    count_photo             INTEGER NOT NULL DEFAULT 1,
+    count_video             INTEGER NOT NULL DEFAULT 1,
+    count_gif               INTEGER NOT NULL DEFAULT 0,
+    count_sticker           INTEGER NOT NULL DEFAULT 0,
+    count_sticker_animated  INTEGER NOT NULL DEFAULT 0,
+    count_voice             INTEGER NOT NULL DEFAULT 0,
+    count_audio             INTEGER NOT NULL DEFAULT 0,
+    count_video_note        INTEGER NOT NULL DEFAULT 0,
+    count_document          INTEGER NOT NULL DEFAULT 0,
     created_at           TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
     updated_at           TIMESTAMP DEFAULT CURRENT_TIMESTAMP
 );
