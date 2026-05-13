@@ -1,31 +1,29 @@
 """
 Constructores de teclados inline para todos los menús.
 
-Esquema de callback_data (compacto, < 64 bytes):
-  m:{chat_id}         → menú principal del chat
-  q/cd/ad/ph:{chat_id} → submenús de regla
-  qs/cds/ads/phs:{chat_id}:{val} → set valor
-  qc/cdc/adc:{chat_id} → pedir valor personalizado (estado conversacional)
-  al:{chat_id}        → submenú alianzas
-  alclr/alclrok:{chat_id}
-  st:{chat_id}        → submenú estadísticas
-  pun:{chat_id}       → menú de castigos
-  punq/puncd/punad:{chat_id} → submenús de castigo por regla
-  punqs/puncds/punads:{chat_id}:{val} → set castigo
-  nq/ncd/nad:{chat_id}        → duración aviso por regla
-  nqs/ncds/nads:{chat_id}:{val}
-  mq/mcd/mad:{chat_id}        → duración mute por regla
-  mqs/mcds/mads:{chat_id}:{val}
-  wn:{chat_id}                → menú warns
-  wnlim/wnexp/wnfin/wnfmute:{chat_id}:{val}
-  adv:{chat_id}               → opciones avanzadas
-  advt:{chat_id}:{field}      → toggle bool
-  advac:{chat_id}             → autoclean submenú
-  advacs:{chat_id}:{val}
-  rstq/rstqok:{chat_id}       → reset cola
-  reset/resetok:{chat_id}     → reset config
-  selg:{chat_id}              → seleccionar este grupo (en privado)
-  cls                         → cerrar menú
+Convención de callback_data (compacto, < 64 bytes):
+  m:{chat_id}            menú principal
+  q/cd/ad/ph:{chat_id}   submenús regla
+  qs/cds/ads/phs         setters
+  qc/cdc/adc             pedir valor personalizado
+  qen/cden/aden          toggle regla activada
+  al/alclr/alclrok       alianzas
+  st                     stats
+  pun + punq/puncd/punad  castigos
+  punqs/puncds/punads
+  nq/ncd/nad + nqs/ncds/nads        notice duration
+  mq/mcd/mad + mqs/mcds/mads        mute duration
+  wn + wnlim/wnexp/wnfin/wnfmute    warns
+  adv + advt + advac + advacs       avanzadas
+  rstq/rstqok                       reset cola
+  reset/resetok                     reset config
+  selg                              selector grupo
+  filt                              menú filtros
+  filtp:{chat_id}:{page}            página de filtros
+  filtt:{chat_id}:{field}           submenú de un filtro
+  filts:{chat_id}:{field}:{action}  setter de filtro
+  hlp                               ayuda dentro del menú
+  cls                               cerrar
 """
 from typing import Any
 
@@ -35,6 +33,8 @@ from config import (
     ANTIDUP_OPTIONS,
     AUTOCLEAN_OPTIONS,
     COOLDOWN_OPTIONS,
+    FILTER_ACTIONS,
+    FILTER_TYPES,
     MUTE_DURATION_OPTIONS,
     NOTICE_DURATION_OPTIONS,
     PHASH_OPTIONS,
@@ -43,6 +43,7 @@ from config import (
     WARN_EXPIRATION_OPTIONS,
     WARN_LIMIT_OPTIONS,
 )
+
 
 # === Helpers internos ===
 
@@ -66,23 +67,6 @@ def _close() -> InlineKeyboardButton:
     return _btn("❌ Cerrar", "cls")
 
 
-# === MENÚ PRINCIPAL ===
-
-def main_menu(cfg: dict[str, Any]) -> InlineKeyboardMarkup:
-    chat_id = cfg["chat_id"]
-    return InlineKeyboardMarkup(inline_keyboard=[
-        [_btn(f"🔄 Cola · {cfg['queue_size']} chicas", f"q:{chat_id}")],
-        [_btn(f"⏱️ Cooldown · {_human_min(cfg['cooldown_minutes'])}", f"cd:{chat_id}")],
-        [_btn(f"🖼️ Anti-duplicado · {cfg['antidup_hours']}h", f"ad:{chat_id}")],
-        [_btn("⚖️ Castigos", f"pun:{chat_id}")],
-        [_btn("⚠️ Sistema de warns", f"wn:{chat_id}")],
-        [_btn("👥 Alianzas", f"al:{chat_id}")],
-        [_btn("📊 Estadísticas", f"st:{chat_id}")],
-        [_btn("⚙️ Opciones avanzadas", f"adv:{chat_id}")],
-        [_close()],
-    ])
-
-
 def _human_min(minutes: int) -> str:
     if minutes < 60:
         return f"{minutes} min"
@@ -91,33 +75,67 @@ def _human_min(minutes: int) -> str:
     return f"{minutes // 60}h{minutes % 60}m"
 
 
+# === MENÚ PRINCIPAL ===
+
+def main_menu(cfg: dict[str, Any]) -> InlineKeyboardMarkup:
+    chat_id = cfg["chat_id"]
+    locked = int(cfg.get("locked", 0))
+    q_on = int(cfg.get("queue_enabled", 1))
+    cd_on = int(cfg.get("cooldown_enabled", 1))
+    ad_on = int(cfg.get("antidup_enabled", 1))
+
+    def state(enabled: bool, label_active: str, label_off: str = "❌ Off") -> str:
+        return label_active if enabled else label_off
+
+    rows = []
+    if locked:
+        rows.append([_btn("🔕 BOT EN PAUSA · pulsa para reanudar", f"lk:{chat_id}")])
+
+    rows.extend([
+        [_btn(f"🔄 Cola · {state(bool(q_on), f'{cfg['queue_size']} chicas')}", f"q:{chat_id}")],
+        [_btn(f"⏱️ Cooldown · {state(bool(cd_on), _human_min(int(cfg['cooldown_minutes'])))}", f"cd:{chat_id}")],
+        [_btn(f"🖼️ Anti-duplicado · {state(bool(ad_on), f'{cfg['antidup_hours']}h')}", f"ad:{chat_id}")],
+        [_btn("⚖️ Castigos", f"pun:{chat_id}"),
+         _btn("⚠️ Warns", f"wn:{chat_id}")],
+        [_btn("🎯 Filtros de contenido", f"filt:{chat_id}:0")],
+        [_btn("👥 Alianzas", f"al:{chat_id}"),
+         _btn("📊 Estadísticas", f"st:{chat_id}")],
+        [_btn("⚙️ Opciones avanzadas", f"adv:{chat_id}")],
+        [_btn("📚 Ayuda y comandos", "hlp"),
+         _close()],
+    ])
+    return InlineKeyboardMarkup(inline_keyboard=rows)
+
+
 # === SUBMENÚ COLA ===
 
-def queue_menu(chat_id: int, current: int) -> InlineKeyboardMarkup:
+def queue_menu(chat_id: int, current: int, enabled: bool) -> InlineKeyboardMarkup:
+    toggle_label = "✅ Activada · pulsa para desactivar" if enabled else "❌ Desactivada · pulsa para activar"
     btns = [_btn(f"{v}{_check(v == current)}", f"qs:{chat_id}:{v}") for v in QUEUE_OPTIONS]
     return InlineKeyboardMarkup(inline_keyboard=[
+        [_btn(toggle_label, f"qen:{chat_id}")],
         *_rows(btns, per_row=4),
         [_btn("✏️ Valor personalizado (1-50)", f"qc:{chat_id}")],
         [_back(chat_id)],
     ])
 
 
-# === SUBMENÚ COOLDOWN ===
-
-def cooldown_menu(chat_id: int, current: int) -> InlineKeyboardMarkup:
+def cooldown_menu(chat_id: int, current: int, enabled: bool) -> InlineKeyboardMarkup:
+    toggle_label = "✅ Activado · pulsa para desactivar" if enabled else "❌ Desactivado · pulsa para activar"
     btns = [_btn(f"{_human_min(v)}{_check(v == current)}", f"cds:{chat_id}:{v}") for v in COOLDOWN_OPTIONS]
     return InlineKeyboardMarkup(inline_keyboard=[
+        [_btn(toggle_label, f"cden:{chat_id}")],
         *_rows(btns, per_row=4),
         [_btn("✏️ Valor personalizado (1-1440 min)", f"cdc:{chat_id}")],
         [_back(chat_id)],
     ])
 
 
-# === SUBMENÚ ANTI-DUPLICADO ===
-
-def antidup_menu(chat_id: int, current_hours: int) -> InlineKeyboardMarkup:
+def antidup_menu(chat_id: int, current_hours: int, enabled: bool) -> InlineKeyboardMarkup:
+    toggle_label = "✅ Activado · pulsa para desactivar" if enabled else "❌ Desactivado · pulsa para activar"
     btns = [_btn(f"{v}h{_check(v == current_hours)}", f"ads:{chat_id}:{v}") for v in ANTIDUP_OPTIONS]
     return InlineKeyboardMarkup(inline_keyboard=[
+        [_btn(toggle_label, f"aden:{chat_id}")],
         *_rows(btns, per_row=4),
         [_btn("✏️ Valor personalizado (1-168h)", f"adc:{chat_id}")],
         [_btn("🎯 Ajustar sensibilidad", f"ph:{chat_id}")],
@@ -131,7 +149,7 @@ def phash_menu(chat_id: int, current: int) -> InlineKeyboardMarkup:
     return InlineKeyboardMarkup(inline_keyboard=rows)
 
 
-# === SUBMENÚ ALIANZAS ===
+# === ALIANZAS ===
 
 def alianzas_menu(chat_id: int, n_alianzas: int) -> InlineKeyboardMarkup:
     rows = []
@@ -148,7 +166,7 @@ def confirm_clear_alianzas(chat_id: int) -> InlineKeyboardMarkup:
     ])
 
 
-# === SUBMENÚ ESTADÍSTICAS ===
+# === ESTADÍSTICAS ===
 
 def stats_menu(chat_id: int) -> InlineKeyboardMarkup:
     return InlineKeyboardMarkup(inline_keyboard=[
@@ -157,7 +175,7 @@ def stats_menu(chat_id: int) -> InlineKeyboardMarkup:
     ])
 
 
-# === MENÚ DE CASTIGOS ===
+# === CASTIGOS ===
 
 def punishments_menu(cfg: dict) -> InlineKeyboardMarkup:
     chat_id = cfg["chat_id"]
@@ -173,7 +191,6 @@ def punishments_menu(cfg: dict) -> InlineKeyboardMarkup:
 
 
 def punishment_choice_menu(chat_id: int, rule_key: str, current: int) -> InlineKeyboardMarkup:
-    """rule_key ∈ {'punq', 'puncd', 'punad'} → genera setter correspondiente."""
     setter = {"punq": "punqs", "puncd": "puncds", "punad": "punads"}[rule_key]
     rows = []
     for code, (emoji, label) in PUNISHMENT_TYPES.items():
@@ -181,9 +198,6 @@ def punishment_choice_menu(chat_id: int, rule_key: str, current: int) -> InlineK
             f"{emoji} {label}{_check(code == current)}",
             f"{setter}:{chat_id}:{code}",
         )])
-    # Si el castigo actual es "aviso" (2), mostrar opción de ajustar duración
-    rule_part = rule_key[3:] if rule_key != "punq" else "q"
-    # Mapeo a las claves cortas de notice/mute
     notice_key = {"punq": "nq", "puncd": "ncd", "punad": "nad"}[rule_key]
     mute_key = {"punq": "mq", "puncd": "mcd", "punad": "mad"}[rule_key]
     if current == 2:
@@ -194,10 +208,7 @@ def punishment_choice_menu(chat_id: int, rule_key: str, current: int) -> InlineK
     return InlineKeyboardMarkup(inline_keyboard=rows)
 
 
-# === DURACIÓN DEL AVISO ===
-
 def notice_duration_menu(chat_id: int, rule_key: str, current: int) -> InlineKeyboardMarkup:
-    """rule_key ∈ {'nq', 'ncd', 'nad'} → setter nqs/ncds/nads."""
     setter = {"nq": "nqs", "ncd": "ncds", "nad": "nads"}[rule_key]
     back_to = {"nq": "punq", "ncd": "puncd", "nad": "punad"}[rule_key]
     btns = [_btn(f"{v}s{_check(v == current)}", f"{setter}:{chat_id}:{v}") for v in NOTICE_DURATION_OPTIONS]
@@ -207,10 +218,7 @@ def notice_duration_menu(chat_id: int, rule_key: str, current: int) -> InlineKey
     ])
 
 
-# === DURACIÓN DEL MUTE ===
-
 def mute_duration_menu(chat_id: int, rule_key: str, current: int) -> InlineKeyboardMarkup:
-    """rule_key ∈ {'mq', 'mcd', 'mad'} → setter mqs/mcds/mads."""
     setter = {"mq": "mqs", "mcd": "mcds", "mad": "mads"}[rule_key]
     back_to = {"mq": "punq", "mcd": "puncd", "mad": "punad"}[rule_key]
     rows = []
@@ -226,7 +234,7 @@ def mute_duration_menu(chat_id: int, rule_key: str, current: int) -> InlineKeybo
     return InlineKeyboardMarkup(inline_keyboard=rows)
 
 
-# === MENÚ DE WARNS ===
+# === WARNS ===
 
 def warns_menu(cfg: dict) -> InlineKeyboardMarkup:
     chat_id = cfg["chat_id"]
@@ -236,7 +244,6 @@ def warns_menu(cfg: dict) -> InlineKeyboardMarkup:
         [_btn(f"📅 Expiración · {cfg['warn_expiration_days']} días", f"wnexp:{chat_id}:0")],
         [_btn(f"🚨 Acción final · {PUNISHMENT_TYPES[final_action][1]}", f"wnfin:{chat_id}:0")],
     ]
-    # Si la acción final es mute, ofrecer ajustar duración
     if final_action == 4:
         from utils.helpers import format_duration
         rows.append([_btn(
@@ -244,21 +251,6 @@ def warns_menu(cfg: dict) -> InlineKeyboardMarkup:
             f"wnfmute:{chat_id}:0",
         )])
     rows.append([_back(chat_id)])
-    return InlineKeyboardMarkup(inline_keyboard=rows)
-
-
-def warn_final_mute_menu(chat_id: int, current: int) -> InlineKeyboardMarkup:
-    """Selector de duración para el mute final del sistema de warns."""
-    rows = []
-    pair = []
-    for v, label in MUTE_DURATION_OPTIONS:
-        pair.append(_btn(f"{label}{_check(v == current)}", f"wnfmute:{chat_id}:{v}"))
-        if len(pair) == 4:
-            rows.append(pair)
-            pair = []
-    if pair:
-        rows.append(pair)
-    rows.append([_btn("🔙 Volver", f"wn:{chat_id}")])
     return InlineKeyboardMarkup(inline_keyboard=rows)
 
 
@@ -287,16 +279,40 @@ def warn_final_menu(chat_id: int, current: int) -> InlineKeyboardMarkup:
     return InlineKeyboardMarkup(inline_keyboard=rows)
 
 
-# === OPCIONES AVANZADAS ===
+def warn_final_mute_menu(chat_id: int, current: int) -> InlineKeyboardMarkup:
+    rows = []
+    pair = []
+    for v, label in MUTE_DURATION_OPTIONS:
+        pair.append(_btn(f"{label}{_check(v == current)}", f"wnfmute:{chat_id}:{v}"))
+        if len(pair) == 4:
+            rows.append(pair)
+            pair = []
+    if pair:
+        rows.append(pair)
+    rows.append([_btn("🔙 Volver", f"wn:{chat_id}")])
+    return InlineKeyboardMarkup(inline_keyboard=rows)
+
+
+# === AVANZADAS ===
 
 def advanced_menu(cfg: dict) -> InlineKeyboardMarkup:
     chat_id = cfg["chat_id"]
+    autoclean_days = int(cfg["autoclean_days"])
+    autoclean_label = "Nunca" if autoclean_days == 0 else f"{autoclean_days} días"
     return InlineKeyboardMarkup(inline_keyboard=[
-        [_btn(f"🔒 Solo admins en menú: {'✅' if cfg['admin_only_menu'] else '❌'}",
-              f"advt:{chat_id}:admin_only_menu")],
-        [_btn(f"🤫 Modo silencio total: {'✅' if cfg['silence_mode'] else '❌'}",
-              f"advt:{chat_id}:silence_mode")],
-        [_btn(f"🗂️ Auto-limpieza: {cfg['autoclean_days']} días", f"advac:{chat_id}")],
+        [_btn(
+            f"🔒 Solo admins en menú: {'✅' if cfg['admin_only_menu'] else '❌'}",
+            f"advt:{chat_id}:admin_only_menu",
+        )],
+        [_btn(
+            f"🤫 Modo silencio total: {'✅' if cfg['silence_mode'] else '❌'}",
+            f"advt:{chat_id}:silence_mode",
+        )],
+        [_btn(
+            f"🧹 Borrar mensajes de servicio: {'✅' if cfg['delete_service_messages'] else '❌'}",
+            f"advt:{chat_id}:delete_service_messages",
+        )],
+        [_btn(f"🗂️ Auto-limpieza: {autoclean_label}", f"advac:{chat_id}")],
         [_btn("🔄 Resetear cola actual", f"rstq:{chat_id}")],
         [_btn("⚠️ Restaurar valores por defecto", f"reset:{chat_id}")],
         [_back(chat_id)],
@@ -304,14 +320,15 @@ def advanced_menu(cfg: dict) -> InlineKeyboardMarkup:
 
 
 def autoclean_menu(chat_id: int, current: int) -> InlineKeyboardMarkup:
-    btns = [_btn(f"{v}d{_check(v == current)}", f"advacs:{chat_id}:{v}") for v in AUTOCLEAN_OPTIONS]
+    btns = []
+    for v in AUTOCLEAN_OPTIONS:
+        label = "Nunca" if v == 0 else f"{v}d"
+        btns.append(_btn(f"{label}{_check(v == current)}", f"advacs:{chat_id}:{v}"))
     return InlineKeyboardMarkup(inline_keyboard=[
         *_rows(btns, per_row=4),
         [_btn("🔙 Volver", f"adv:{chat_id}")],
     ])
 
-
-# === CONFIRMACIONES ===
 
 def confirm_reset_queue(chat_id: int) -> InlineKeyboardMarkup:
     return InlineKeyboardMarkup(inline_keyboard=[
@@ -336,3 +353,58 @@ def group_selector(chats: list[dict]) -> InlineKeyboardMarkup:
         rows.append([_btn(f"📍 {title}", f"selg:{chat['chat_id']}")])
     rows.append([_close()])
     return InlineKeyboardMarkup(inline_keyboard=rows)
+
+
+# === FILTROS DE TIPOS DE CONTENIDO (estilo GroupHelp) ===
+
+FILTERS_PER_PAGE = 8
+
+
+def filter_main_menu(cfg: dict, page: int = 0) -> InlineKeyboardMarkup:
+    """Menú principal de filtros con paginación."""
+    chat_id = cfg["chat_id"]
+    total_pages = (len(FILTER_TYPES) + FILTERS_PER_PAGE - 1) // FILTERS_PER_PAGE
+    start = page * FILTERS_PER_PAGE
+    end = start + FILTERS_PER_PAGE
+    items = FILTER_TYPES[start:end]
+
+    rows = []
+    for emoji, label, field in items:
+        current = int(cfg.get(field, 0))
+        action_emoji, action_label = FILTER_ACTIONS[current]
+        rows.append([_btn(
+            f"{emoji} {label} · {action_emoji} {action_label}",
+            f"filtt:{chat_id}:{field}",
+        )])
+
+    # Navegación paginada
+    nav = []
+    if page > 0:
+        nav.append(_btn("⬅️ Anterior", f"filt:{chat_id}:{page - 1}"))
+    if page < total_pages - 1:
+        nav.append(_btn("Siguiente ➡️", f"filt:{chat_id}:{page + 1}"))
+    if nav:
+        rows.append(nav)
+
+    rows.append([_back(chat_id)])
+    return InlineKeyboardMarkup(inline_keyboard=rows)
+
+
+def filter_action_menu(chat_id: int, field: str, current: int, page: int = 0) -> InlineKeyboardMarkup:
+    """Submenú de un filtro: elegir acción."""
+    rows = []
+    for action, (emoji, label) in FILTER_ACTIONS.items():
+        rows.append([_btn(
+            f"{emoji} {label}{_check(action == current)}",
+            f"filts:{chat_id}:{field}:{action}",
+        )])
+    rows.append([_btn("🔙 Volver a filtros", f"filt:{chat_id}:{page}")])
+    return InlineKeyboardMarkup(inline_keyboard=rows)
+
+
+# === Ayuda dentro del menú ===
+
+def help_menu_keyboard() -> InlineKeyboardMarkup:
+    return InlineKeyboardMarkup(inline_keyboard=[
+        [_close()],
+    ])
