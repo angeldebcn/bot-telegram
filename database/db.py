@@ -71,8 +71,11 @@ CREATE TABLE IF NOT EXISTS posts (
     phash           TEXT,
     video_size      INTEGER,
     video_duration  INTEGER,
-    posted_at       TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+    posted_at       TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+    deleted_at      TIMESTAMP
 );
+CREATE INDEX IF NOT EXISTS idx_posts_chat_msg ON posts(chat_id, message_id);
+CREATE INDEX IF NOT EXISTS idx_posts_deleted ON posts(deleted_at);
 CREATE INDEX IF NOT EXISTS idx_posts_chat_user    ON posts(chat_id, user_id);
 CREATE INDEX IF NOT EXISTS idx_posts_chat_posted  ON posts(chat_id, posted_at);
 CREATE INDEX IF NOT EXISTS idx_posts_chat_phash   ON posts(chat_id, phash);
@@ -163,12 +166,26 @@ async def _migrate_chat_config(db) -> None:
         await db.commit()
 
 
+async def _migrate_posts(db) -> None:
+    """Añade columna deleted_at a la tabla posts si no existe."""
+    cur = await db.execute("PRAGMA table_info(posts)")
+    cols = {row[1] for row in await cur.fetchall()}
+    if "deleted_at" not in cols:
+        try:
+            await db.execute("ALTER TABLE posts ADD COLUMN deleted_at TIMESTAMP")
+            await db.commit()
+            logger.info("Migración: añadida columna posts.deleted_at")
+        except aiosqlite.Error as e:
+            logger.warning("No se pudo migrar posts.deleted_at: %s", e)
+
+
 async def init_db() -> None:
     """Inicializa la BD y aplica migraciones automáticas."""
     async with aiosqlite.connect(DB_PATH) as db:
         await db.executescript(SCHEMA)
         await db.commit()
         await _migrate_chat_config(db)
+        await _migrate_posts(db)
     logger.info("✅ Base de datos inicializada en %s", DB_PATH)
 
 
