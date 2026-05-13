@@ -98,13 +98,19 @@ def main_menu(cfg: dict[str, Any]) -> InlineKeyboardMarkup:
     cd_label = state(bool(cd_on), _human_min(cooldown_min))
     ad_label = state(bool(ad_on), f"{antidup_h}h")
 
+    # Contador de tipos activos (para mostrarlo en el botón)
+    from config import COUNTABLE_TYPES
+    countable_on = sum(1 for _, _, field, _ in COUNTABLE_TYPES if int(cfg.get(field, 0)))
+    countable_total = len(COUNTABLE_TYPES)
+
     rows.extend([
         [_btn(f"🔄 Cola · {cola_label}", f"q:{chat_id}")],
         [_btn(f"⏱️ Cooldown · {cd_label}", f"cd:{chat_id}")],
         [_btn(f"🖼️ Anti-duplicado · {ad_label}", f"ad:{chat_id}")],
         [_btn("⚖️ Castigos", f"pun:{chat_id}"),
          _btn("⚠️ Warns", f"wn:{chat_id}")],
-        [_btn("🎯 Filtros de contenido", f"filt:{chat_id}:0")],
+        [_btn(f"🎯 Tipos sujetos a reglas · {countable_on}/{countable_total}",
+              f"cnt:{chat_id}")],
         [_btn("👥 Alianzas", f"al:{chat_id}"),
          _btn("📊 Estadísticas", f"st:{chat_id}")],
         [_btn("⚙️ Opciones avanzadas", f"adv:{chat_id}")],
@@ -409,6 +415,30 @@ def filter_action_menu(chat_id: int, field: str, current: int, page: int = 0) ->
             f"filts:{chat_id}:{field}:{action}",
         )])
     rows.append([_btn("🔙 Volver a filtros", f"filt:{chat_id}:{page}")])
+    return InlineKeyboardMarkup(inline_keyboard=rows)
+
+
+# === TIPOS SUJETOS A LAS 3 REGLAS ===
+
+def countable_menu(cfg: dict) -> InlineKeyboardMarkup:
+    """
+    Menú donde el admin activa/desactiva qué tipos cuentan como publicación.
+
+    Cada tipo es un toggle. Si está ON, ese tipo pasa por las 3 reglas
+    (cola/cooldown/antidup). Si está OFF, el bot lo ignora completamente.
+    """
+    from config import COUNTABLE_TYPES
+    chat_id = cfg["chat_id"]
+    rows = []
+    for emoji, label, field, supports_antidup in COUNTABLE_TYPES:
+        active = bool(int(cfg.get(field, 0)))
+        state_icon = "✅" if active else "⬜"
+        antidup_mark = "" if supports_antidup else " *"
+        rows.append([_btn(
+            f"{state_icon} {emoji} {label}{antidup_mark}",
+            f"cntt:{chat_id}:{field}",
+        )])
+    rows.append([_back(chat_id)])
     return InlineKeyboardMarkup(inline_keyboard=rows)
 
 
