@@ -107,7 +107,8 @@ async def handle_group_message(message: Message, bot: Bot) -> None:
     # 3. Si es admin o alianza, dejar pasar sin tocar
     user_id = message.from_user.id
     if await is_exempt(bot, message.chat.id, user_id):
-        # Si es foto/video, aún registramos para detección futura de duplicados
+        # Si es foto/video, registramos para detección futura de duplicados
+        # (los demás tipos no se registran porque no aplica antidup)
         if message.photo or message.video:
             await album_collector.add(
                 message,
@@ -115,51 +116,48 @@ async def handle_group_message(message: Message, bot: Bot) -> None:
             )
         return
 
-    # 4. Detectar tipo del mensaje y aplicar filtro si corresponde
+    # 4. Detectar tipo del mensaje
     msg_type = detect_message_type(message)
-    if msg_type:
-        action = int(cfg.get(msg_type, 0))
-        if action > 0:
-            # Si es foto/video y el filtro NO los borra (action != 1) tendríamos
-            # un conflicto; pero como el filtro siempre borra primero, OK.
-            # Caso especial: si es foto/video y action está activado, debemos
-            # acumular el álbum para borrarlo entero si es un álbum.
-            if message.photo or message.video:
-                await album_collector.add(
-                    message,
-                    on_complete=lambda msgs: _process_filter_album(
-                        bot, msgs, msg_type, action,
-                    ),
-                )
-                return
-            # Otros tipos: actuar inmediato
-            from config import FILTER_TYPES
-            label = msg_type
-            for emoji, lab, field in FILTER_TYPES:
-                if field == msg_type:
-                    label = f"{emoji} {lab}"
-                    break
-            await apply_filter_action(
-                bot, message.chat.id, user_id, message.from_user.username,
-                [message.message_id], action, label,
-            )
-            return
 
-    # 5. Solo foto/video pasa a las 3 reglas
-    if not (message.photo or message.video):
+    # 5. ¿Es un tipo "contable" (sujeto a las 3 reglas)?
+    # Mapeo de campo filter_X (detección) → campo count_X (toggle de reglas)
+    count_field = _filter_to_count_field(msg_type) if msg_type else None
+    is_countable = count_field is not None and int(cfg.get(count_field, 0)) == 1
+
+    if not is_countable:
+        # El bot ignora completamente este tipo
         return
 
-    # 6. Buffer de álbum y aplicar reglas
+    # 6. Buffer de álbum y aplicar las 3 reglas
     await album_collector.add(
         message,
         on_complete=lambda msgs: _process_publication(bot, msgs, exempt=False),
     )
 
 
+def _filter_to_count_field(filter_field: str) -> Optional[str]:
+    """
+    Mapea un campo filter_X (devuelto por detect_message_type) al campo count_X
+    correspondiente. Devuelve None si no hay un equivalente contable.
+    """
+    mapping = {
+        "filter_photo": "count_photo",
+        "filter_video": "count_video",
+        "filter_gif": "count_gif",
+        "filter_sticker": "count_sticker",
+        "filter_sticker_animated": "count_sticker_animated",
+        "filter_voice": "count_voice",
+        "filter_audio": "count_audio",
+        "filter_video_note": "count_video_note",
+        "filter_document": "count_document",
+    }
+    return mapping.get(filter_field)
+
+
 async def _process_filter_album(
     bot: Bot, messages: list[Message], filter_field: str, action: int,
 ) -> None:
-    """Aplica un filtro a un álbum entero."""
+    """Aplica un filtro a un álbum entero. (Legado, ya no se usa en el flujo principal)"""
     if not messages:
         return
     first = messages[0]
@@ -293,7 +291,7 @@ async def _process_publication(
 async def _hash_first_media(
     bot: Bot, message: Message,
 ) -> tuple[Optional[str], Optional[int], Optional[int]]:
-    """Devuelve (phash_hex, video_size, video_duration)."""
+    """Devuelve (phash_hex, video_size, video_duration). None si no hasheable."""
     try:
         if message.photo:
             photo = message.photo[-1]
@@ -309,6 +307,26 @@ async def _hash_first_media(
             await bot.download_file(file.file_path, destination=buf)
             phash = await phash_video_first_frame(buf.getvalue())
             return phash, video.file_size, video.duration
+        if message.animation:  # GIF
+            anim = message.animation
+            try:
+                file = await bot.get_file(anim.file_id)
+                buf = BytesIO()
+                await bot.download_file(file.file_path, destination=buf)
+                phash = await phash_video_first_frame(buf.getvalue())
+                return phash, anim.file_size, anim.duration
+            except Exception:
+                return None, anim.file_size, anim.duration
+        if message.video_note:  # vídeo redondo
+            vn = message.video_note
+            try:
+                file = await bot.get_file(vn.file_id)
+                buf = BytesIO()
+                await bot.download_file(file.file_path, destination=buf)
+                phash = await phash_video_first_frame(buf.getvalue())
+                return phash, vn.file_size, vn.duration
+            except Exception:
+                return None, vn.file_size, vn.duration
     except TelegramBadRequest as e:
         logger.warning("No se pudo descargar media: %s", e)
         if message.video:

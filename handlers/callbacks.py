@@ -849,6 +849,69 @@ async def cb_filter_set(cb: CallbackQuery, bot: Bot) -> None:
     await cb.answer(f"✅ {FILTER_ACTIONS[action][1]}")
 
 
+# === TIPOS SUJETOS A LAS 3 REGLAS ===
+@router.callback_query(F.data.startswith("cnt:"))
+async def cb_countable_menu(cb: CallbackQuery, bot: Bot) -> None:
+    """Abre el menú de tipos sujetos a las reglas."""
+    chat_id = int(cb.data.split(":")[1])
+    if not await _check_admin_or_deny(cb, bot, chat_id):
+        return
+    cfg = await get_config(chat_id)
+    from config import COUNTABLE_TYPES
+    from keyboards.builders import countable_menu
+    active_count = sum(1 for _, _, f, _ in COUNTABLE_TYPES if int(cfg.get(f, 0)))
+    text = (
+        "🎯 <b>Tipos sujetos a las 3 reglas</b>\n\n"
+        "Decide qué tipos de contenido cuentan como <b>publicación</b>. "
+        "Los que actives pasarán por cola, cooldown y anti-duplicado "
+        "como lo hacen las fotos y vídeos.\n\n"
+        "✅ <b>Activo</b> · cuenta como publicación\n"
+        "⬜ <b>Inactivo</b> · el bot lo ignora\n\n"
+        f"<i>Activos ahora: <b>{active_count}/{len(COUNTABLE_TYPES)}</b></i>\n\n"
+        "<i>* = soporta anti-duplicado (foto/vídeo/gif/video redondo)</i>"
+    )
+    await _safe_edit(cb, text, countable_menu(cfg))
+    await cb.answer()
+
+
+@router.callback_query(F.data.startswith("cntt:"))
+async def cb_countable_toggle(cb: CallbackQuery, bot: Bot) -> None:
+    """Cambia el estado ON/OFF de un tipo."""
+    parts = cb.data.split(":")
+    chat_id, field = int(parts[1]), parts[2]
+    if not await _check_admin_or_deny(cb, bot, chat_id):
+        return
+    cfg = await get_config(chat_id)
+    if field not in cfg:
+        await cb.answer("Campo inválido")
+        return
+    current = int(cfg.get(field, 0))
+    new = 0 if current else 1
+    await update_config(chat_id, field, new)
+    # Re-render el menú
+    cfg = await get_config(chat_id)
+    from config import COUNTABLE_TYPES
+    from keyboards.builders import countable_menu
+    active_count = sum(1 for _, _, f, _ in COUNTABLE_TYPES if int(cfg.get(f, 0)))
+    label = field
+    for emoji, lab, fld, _supp in COUNTABLE_TYPES:
+        if fld == field:
+            label = f"{emoji} {lab}"
+            break
+    text = (
+        "🎯 <b>Tipos sujetos a las 3 reglas</b>\n\n"
+        "Decide qué tipos de contenido cuentan como <b>publicación</b>. "
+        "Los que actives pasarán por cola, cooldown y anti-duplicado "
+        "como lo hacen las fotos y vídeos.\n\n"
+        "✅ <b>Activo</b> · cuenta como publicación\n"
+        "⬜ <b>Inactivo</b> · el bot lo ignora\n\n"
+        f"<i>Activos ahora: <b>{active_count}/{len(COUNTABLE_TYPES)}</b></i>\n\n"
+        "<i>* = soporta anti-duplicado (foto/vídeo/gif/video redondo)</i>"
+    )
+    await _safe_edit(cb, text, countable_menu(cfg))
+    await cb.answer(f"{'✅ Activado' if new else '⬜ Desactivado'}: {label}")
+
+
 # === AYUDA (botón "📚 Ayuda y comandos" del menú) ===
 @router.callback_query(F.data == "hlp")
 async def cb_help_menu(cb: CallbackQuery, bot: Bot) -> None:
