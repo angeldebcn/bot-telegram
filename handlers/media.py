@@ -245,6 +245,13 @@ async def _process_publication(
             )
             return
 
+    # === LAZY CHECK ===
+    # Antes de aplicar cooldown/cola, verificar que las publicaciones recientes
+    # de la usuaria SIGUEN EXISTIENDO en Telegram. Si alguien (la propia chica,
+    # un admin, el dueño del mensaje) las borró manualmente, las anulamos en BD
+    # y dejamos de contarlas. Así si la chica borra y vuelve a publicar, puede.
+    await _sweep_deleted_posts(bot, chat_id, user_id)
+
     # Regla 2: COOLDOWN
     last_time = await posts_db.get_last_post_time(chat_id, user_id)
     if int(cfg.get("cooldown_enabled", 1)) and last_time is not None:
@@ -309,6 +316,71 @@ async def _hash_first_media(
     except Exception as e:
         logger.exception("Error hasheando media: %s", e)
     return None, None, None
+
+
+async def _post_still_exists(bot: Bot, chat_id: int, message_id: int) -> bool:
+    """
+    Verifica si un mensaje SIGUE existiendo en Telegram (sin modificarlo).
+    Usa bot.edit_message_reply_markup con markup vacío: si el mensaje existe
+    es un no-op silencioso; si fue borrado, Telegram devuelve error.
+    """
+    try:
+        await bot.edit_message_reply_markup(
+            chat_id=chat_id, message_id=message_id, reply_markup=None,
+        )
+        return True
+    except TelegramBadRequest as e:
+        s = str(e).lower()
+        # Mensaje borrado / no existe
+        if any(k in s for k in (
+            "message to edit not found",
+            "message_id_invalid",
+            "message not found",
+            "message can't be edited",  # demasiado antiguo: asumimos que existe
+        )):
+            # "can't be edited" suele ser por antigüedad, NO porque esté borrado
+            if "can't be edited" in s or "too old" in s:
+                return True
+            return False
+        return True  # cualquier otro error: ser conservadores
+    except Exception:
+        return True
+
+
+async def _sweep_deleted_posts(bot: Bot, chat_id: int, user_id: int) -> int:
+    """
+    Verifica las últimas publicaciones del usuario y anula las que ya no
+    existan en Telegram. Devuelve cuántas se anularon.
+
+    Estrategia: comprobamos las 3 más recientes (suficiente: si la chica
+    publicó 5 veces y borró las 3 últimas, queremos detectarlo). No
+    barremos más de 3 para no saturar la API.
+    """
+    recent = await posts_db.get_recent_posts(chat_id, user_id, limit=3)
+    if not recent:
+        return 0
+    anuladas = 0
+    seen_albums: set[str] = set()
+    for post in recent:
+        # Saltar si ya tratamos este álbum
+        mg = post.get("media_group_id")
+        if mg and mg in seen_albums:
+            continue
+        if mg:
+            seen_albums.add(mg)
+        message_id = post.get("message_id")
+        if not message_id:
+            continue
+        exists = await _post_still_exists(bot, chat_id, message_id)
+        if not exists:
+            await posts_db.mark_deleted_by_message_id(chat_id, message_id)
+            anuladas += 1
+            logger.info(
+                "🗑️ Post auto-anulado (borrado manual detectado): "
+                "chat=%s user=%s message_id=%s",
+                chat_id, user_id, message_id,
+            )
+    return anuladas
 
 
 async def _check_duplicate(

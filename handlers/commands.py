@@ -190,6 +190,7 @@ async def cmd_help(message: Message, bot: Bot) -> None:
             "<code>/warns @user</code> — Ver warns activos\n\n"
             "⚡ <b>Atajos</b> (admins)\n"
             "<code>/forcepost @user</code> — Pase libre próxima publicación\n"
+            "<code>/cancel</code> (reply o sin args) — Anular publicación (no cuenta)\n"
             "<code>/logs</code> — Últimas 20 acciones del bot\n\n"
             "✨ <b>Para todas</b>\n"
             "<code>/myturn</code> — Cuándo me toca a mí publicar\n"
@@ -339,6 +340,115 @@ async def cmd_forcepost(message: Message, bot: Bot) -> None:
     await message.reply(
         f"⚡ {mention} tiene <b>pase libre</b> para su próxima publicación.\n"
         f"Las 3 reglas se ignorarán solo en ese mensaje."
+    )
+
+
+# ============== /cancel ==============
+@router.message(Command("cancel", "anular", "borrar"))
+async def cmd_cancel(message: Message, bot: Bot) -> None:
+    """
+    Anula una publicación para que NO cuente en las reglas.
+
+    Modos:
+    - Reply al mensaje (foto/vídeo) + /cancel → anula esa publicación.
+      Solo el autor o un admin pueden hacerlo.
+    - /cancel sin reply, desde la propia chica → anula su última publicación.
+    - /cancel @user (admin) → anula la última publicación de esa usuaria.
+
+    Si la publicación todavía existe en Telegram, también se borra el mensaje.
+    """
+    if not _is_in_group(message):
+        await message.reply(es.ERR_NO_GROUP)
+        return
+    if not await chat_is_allowed(message.chat.id):
+        await message.reply(es.ERR_NOT_LICENSED)
+        return
+    if not message.from_user:
+        return
+
+    chat_id = message.chat.id
+    requester_id = message.from_user.id
+    is_requester_admin = await is_admin(bot, chat_id, requester_id)
+    from database import posts as posts_db_local
+
+    # Modo 1: reply a una publicación concreta
+    if message.reply_to_message:
+        target = message.reply_to_message
+        if not target.from_user:
+            await message.reply("❌ No puedo identificar al autor de ese mensaje.")
+            return
+        target_user_id = target.from_user.id
+        # Permitido si es el propio autor o un admin
+        if target_user_id != requester_id and not is_requester_admin:
+            await message.reply("❌ Solo puedes anular tus propias publicaciones.")
+            return
+        affected = await posts_db_local.mark_deleted_by_message_id(
+            chat_id, target.message_id,
+        )
+        if affected == 0:
+            await message.reply(
+                "ℹ️ Ese mensaje no está registrado como publicación.\n"
+                "Posibles razones: ya estaba anulado, o no era una foto/vídeo "
+                "que el bot haya contado."
+            )
+            return
+        # Intentar borrar también el mensaje real
+        try:
+            await bot.delete_message(chat_id, target.message_id)
+        except TelegramBadRequest:
+            pass
+        mention = safe_username(target.from_user.username, target_user_id)
+        plural = "es" if affected > 1 else ""
+        await message.reply(
+            f"✅ Anulada{plural} <b>{affected}</b> publicación{plural} de {mention}.\n"
+            f"No contará para las reglas. Puede volver a publicar."
+        )
+        return
+
+    # Modo 2: /cancel @user (solo admins)
+    args = _command_args(message)
+    if args:
+        if not is_requester_admin:
+            await message.reply("❌ Solo los admins pueden anular publicaciones de otras.")
+            return
+        target_uid, target_uname, _full, error = await _resolve_target_user(bot, message, args)
+        if error:
+            await message.reply(error)
+            return
+        if not target_uid:
+            await message.reply(es.ERR_USER_NOT_FOUND)
+            return
+        last = await posts_db_local.mark_user_last_deleted(chat_id, target_uid)
+        if not last:
+            mention = safe_username(target_uname, target_uid)
+            await message.reply(f"ℹ️ {mention} no tiene publicaciones registradas.")
+            return
+        try:
+            await bot.delete_message(chat_id, last["message_id"])
+        except TelegramBadRequest:
+            pass
+        mention = safe_username(target_uname, target_uid)
+        await message.reply(
+            f"✅ Anulada la última publicación de {mention}.\n"
+            f"No contará para las reglas."
+        )
+        return
+
+    # Modo 3: /cancel sin args → anular MI última publicación
+    last = await posts_db_local.mark_user_last_deleted(chat_id, requester_id)
+    if not last:
+        await message.reply(
+            "ℹ️ No tienes ninguna publicación registrada que pueda anular.\n\n"
+            "Para anular una publicación concreta, <b>responde</b> a ella con /cancel."
+        )
+        return
+    try:
+        await bot.delete_message(chat_id, last["message_id"])
+    except TelegramBadRequest:
+        pass
+    await message.reply(
+        "✅ Tu última publicación ha sido anulada.\n"
+        "No contará para las reglas. Puedes volver a publicar."
     )
 
 

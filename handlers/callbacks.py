@@ -861,13 +861,14 @@ async def cb_help_menu(cb: CallbackQuery, bot: Bot) -> None:
         "<code>/unlock</code> · reanudar\n"
         "<code>/freespam @user</code> · eximir a una chica\n"
         "<code>/forcepost @user</code> · pase libre próxima publicación\n"
+        "<code>/cancel</code> · anular publicación (no cuenta)\n"
         "<code>/warn @user motivo</code> · advertir\n"
         "<code>/help</code> · lista completa\n\n"
         "🗂️ <b>En privado conmigo:</b>\n"
         "<code>/menu</code> · elegir grupo y configurar\n"
         "<code>/help</code> · ayuda\n\n"
-        "💡 <i>Para añadir a una chica como exenta sin responder a su mensaje, "
-        "usa</i> <code>/freespam @username</code> <i>o</i> <code>/freespam ID</code>."
+        "💡 <i>Para anular tu última publicación rápido, escribe</i> <code>/cancel</code>. "
+        "<i>Para anular una concreta, responde a ella con</i> <code>/cancel</code>."
     )
     await _safe_edit(cb, text, help_menu_keyboard())
     await cb.answer()
