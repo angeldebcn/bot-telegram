@@ -91,10 +91,17 @@ def main_menu(cfg: dict[str, Any]) -> InlineKeyboardMarkup:
     if locked:
         rows.append([_btn("🔕 BOT EN PAUSA · pulsa para reanudar", f"lk:{chat_id}")])
 
+    queue_size = cfg["queue_size"]
+    cooldown_min = int(cfg["cooldown_minutes"])
+    antidup_h = cfg["antidup_hours"]
+    cola_label = state(bool(q_on), f"{queue_size} chicas")
+    cd_label = state(bool(cd_on), _human_min(cooldown_min))
+    ad_label = state(bool(ad_on), f"{antidup_h}h")
+
     rows.extend([
-        [_btn(f"🔄 Cola · {state(bool(q_on), f'{cfg['queue_size']} chicas')}", f"q:{chat_id}")],
-        [_btn(f"⏱️ Cooldown · {state(bool(cd_on), _human_min(int(cfg['cooldown_minutes'])))}", f"cd:{chat_id}")],
-        [_btn(f"🖼️ Anti-duplicado · {state(bool(ad_on), f'{cfg['antidup_hours']}h')}", f"ad:{chat_id}")],
+        [_btn(f"🔄 Cola · {cola_label}", f"q:{chat_id}")],
+        [_btn(f"⏱️ Cooldown · {cd_label}", f"cd:{chat_id}")],
+        [_btn(f"🖼️ Anti-duplicado · {ad_label}", f"ad:{chat_id}")],
         [_btn("⚖️ Castigos", f"pun:{chat_id}"),
          _btn("⚠️ Warns", f"wn:{chat_id}")],
         [_btn("🎯 Filtros de contenido", f"filt:{chat_id}:0")],
@@ -211,9 +218,12 @@ def punishment_choice_menu(chat_id: int, rule_key: str, current: int) -> InlineK
 def notice_duration_menu(chat_id: int, rule_key: str, current: int) -> InlineKeyboardMarkup:
     setter = {"nq": "nqs", "ncd": "ncds", "nad": "nads"}[rule_key]
     back_to = {"nq": "punq", "ncd": "puncd", "nad": "punad"}[rule_key]
-    btns = [_btn(f"{v}s{_check(v == current)}", f"{setter}:{chat_id}:{v}") for v in NOTICE_DURATION_OPTIONS]
+    btns = []
+    for v in NOTICE_DURATION_OPTIONS:
+        label = "♾️ Permanente" if v == 0 else f"{v}s"
+        btns.append(_btn(f"{label}{_check(v == current)}", f"{setter}:{chat_id}:{v}"))
     return InlineKeyboardMarkup(inline_keyboard=[
-        *_rows(btns, per_row=4),
+        *_rows(btns, per_row=3),
         [_btn("🔙 Volver", f"{back_to}:{chat_id}")],
     ])
 
