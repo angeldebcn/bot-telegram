@@ -55,10 +55,17 @@ async def delete_messages_safe(bot: Bot, chat_id: int, message_ids: list[int]) -
 async def _send_autodestruct_notice(
     bot: Bot, chat_id: int, text: str, seconds: int
 ) -> None:
-    """Envía un aviso que se autodestruye tras N segundos."""
+    """
+    Envía un aviso. Si seconds > 0, se autodestruye tras esos segundos.
+    Si seconds == 0, el aviso se queda PERMANENTE (no se borra).
+    """
     try:
         msg = await bot.send_message(chat_id, text, disable_notification=True)
     except (TelegramBadRequest, TelegramForbiddenError):
+        return
+
+    if seconds <= 0:
+        # Aviso permanente: no programar borrado
         return
 
     async def _delete_later() -> None:
