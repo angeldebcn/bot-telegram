@@ -1,15 +1,12 @@
 """
-Handler de fotos, vídeos y álbumes. Aplica las 3 reglas.
+Handler de mensajes en grupos. Aplica:
+1. Licencia (si no está activada, ignora todo).
+2. /lock (si activo, ignora todo).
+3. Filtros de tipo de contenido (estilo GroupHelp).
+4. /forcepost (si la chica tiene pase libre, registra y sale).
+5. Reglas de cola/cooldown/anti-duplicado (cada una con su toggle).
 
-Flujo por publicación:
-1. Si la usuaria es admin o alianza → permitir, registrar post, fin.
-2. Calcular hash perceptual (y meta para vídeos).
-3. Comprobar regla 3: anti-duplicado → si infringe, castigo y NO se registra.
-4. Comprobar regla 2: cooldown → idem.
-5. Comprobar regla 1: cola → idem.
-6. Todas pasadas → registrar post.
-
-Álbumes: se buffer-ean ~2s con media_group_id y se tratan como UNA publicación.
+Álbumes (media_group_id): se buffer-ean ~2s y se procesan como UNA publicación.
 """
 import logging
 from datetime import datetime, timedelta
@@ -17,59 +14,185 @@ from io import BytesIO
 from typing import Optional
 
 from aiogram import Bot, F, Router
+from aiogram.enums import ChatType
 from aiogram.exceptions import TelegramBadRequest
-from aiogram.types import Message
+from aiogram.types import ChatMemberUpdated, Message
 
+from config import OWNER_USER_ID, OWNER_USERNAME
+from database import licenses as licenses_db
 from database import posts as posts_db
 from database.config_db import get_config, update_chat_title
-from database.stats import cache_user, log_action, upsert_bot_chat
+from database.stats import cache_user, log_action, remove_bot_chat, upsert_bot_chat
 from utils.album_collector import album_collector
+from utils.filters import apply_filter_action, detect_message_type
 from utils.helpers import time_until
+from utils.license_helpers import (
+    chat_is_allowed,
+    is_owner,
+    notify_owner,
+    subscription_pitch,
+)
 from utils.media_hash import phash_image, phash_video_first_frame
-from utils.permissions import is_exempt
-from utils.punishment import apply_punishment
+from utils.permissions import is_admin, is_exempt
+from utils.punishment import apply_punishment, delete_messages_safe
 
 logger = logging.getLogger(__name__)
 router = Router(name="media")
 
 
-# Filtro: foto o vídeo (no GIFs, no stickers, no video notes, no documentos)
-@router.message(F.photo | F.video, F.chat.type.in_({"group", "supergroup"}))
-async def handle_media(message: Message, bot: Bot) -> None:
-    """Recibe foto/vídeo y delega al colector de álbumes."""
-    # Ignorar mensajes de bots
-    if message.from_user and message.from_user.is_bot:
+# /forcepost: pase libre temporal en memoria
+# {chat_id: {user_id, ...}}
+_force_pass: dict[int, set[int]] = {}
+
+
+def grant_force_pass(chat_id: int, user_id: int) -> None:
+    """Concede un pase libre para la próxima publicación."""
+    _force_pass.setdefault(chat_id, set()).add(user_id)
+
+
+def _consume_force_pass(chat_id: int, user_id: int) -> bool:
+    """Devuelve True si el usuario tenía pase, y lo consume."""
+    s = _force_pass.get(chat_id)
+    if s and user_id in s:
+        s.discard(user_id)
+        if not s:
+            _force_pass.pop(chat_id, None)
+        return True
+    return False
+
+
+# === Auto-borrado de mensajes de servicio ===
+@router.message(
+    F.chat.type.in_({"group", "supergroup"}),
+    F.new_chat_members | F.left_chat_member | F.new_chat_title
+    | F.new_chat_photo | F.delete_chat_photo | F.pinned_message
+    | F.group_chat_created | F.supergroup_chat_created | F.channel_chat_created
+    | F.message_auto_delete_timer_changed
+    | F.video_chat_started | F.video_chat_ended
+    | F.video_chat_participants_invited,
+)
+async def handle_service_messages(message: Message, bot: Bot) -> None:
+    """Borra mensajes de servicio si la opción está activada."""
+    if not await chat_is_allowed(message.chat.id):
         return
+    cfg = await get_config(message.chat.id)
+    if not int(cfg.get("delete_service_messages", 0)):
+        return
+    try:
+        await bot.delete_message(message.chat.id, message.message_id)
+    except TelegramBadRequest:
+        pass
+
+
+# === Handler principal de mensajes en grupos ===
+@router.message(F.chat.type.in_({"group", "supergroup"}), F.from_user)
+async def handle_group_message(message: Message, bot: Bot) -> None:
+    """Punto de entrada de todo mensaje en grupo."""
+    # Refrescar metadata
     await _refresh_chat_meta(message)
+
+    # Ignorar mensajes de bots
+    if message.from_user.is_bot:
+        return
+
+    # 1. Licencia: si el chat no está autorizado, salir
+    if not await chat_is_allowed(message.chat.id):
+        return
+
+    # 2. Lock: si el grupo está locked, no aplicar nada
+    cfg = await get_config(message.chat.id)
+    if int(cfg.get("locked", 0)):
+        return
+
+    # 3. Si es admin o alianza, dejar pasar sin tocar
+    user_id = message.from_user.id
+    if await is_exempt(bot, message.chat.id, user_id):
+        # Si es foto/video, aún registramos para detección futura de duplicados
+        if message.photo or message.video:
+            await album_collector.add(
+                message,
+                on_complete=lambda msgs: _process_publication(bot, msgs, exempt=True),
+            )
+        return
+
+    # 4. Detectar tipo del mensaje y aplicar filtro si corresponde
+    msg_type = detect_message_type(message)
+    if msg_type:
+        action = int(cfg.get(msg_type, 0))
+        if action > 0:
+            # Si es foto/video y el filtro NO los borra (action != 1) tendríamos
+            # un conflicto; pero como el filtro siempre borra primero, OK.
+            # Caso especial: si es foto/video y action está activado, debemos
+            # acumular el álbum para borrarlo entero si es un álbum.
+            if message.photo or message.video:
+                await album_collector.add(
+                    message,
+                    on_complete=lambda msgs: _process_filter_album(
+                        bot, msgs, msg_type, action,
+                    ),
+                )
+                return
+            # Otros tipos: actuar inmediato
+            from config import FILTER_TYPES
+            label = msg_type
+            for emoji, lab, field in FILTER_TYPES:
+                if field == msg_type:
+                    label = f"{emoji} {lab}"
+                    break
+            await apply_filter_action(
+                bot, message.chat.id, user_id, message.from_user.username,
+                [message.message_id], action, label,
+            )
+            return
+
+    # 5. Solo foto/video pasa a las 3 reglas
+    if not (message.photo or message.video):
+        return
+
+    # 6. Buffer de álbum y aplicar reglas
     await album_collector.add(
         message,
-        on_complete=lambda msgs: _process_publication(bot, msgs),
+        on_complete=lambda msgs: _process_publication(bot, msgs, exempt=False),
+    )
+
+
+async def _process_filter_album(
+    bot: Bot, messages: list[Message], filter_field: str, action: int,
+) -> None:
+    """Aplica un filtro a un álbum entero."""
+    if not messages:
+        return
+    first = messages[0]
+    from config import FILTER_TYPES
+    label = filter_field
+    for emoji, lab, field in FILTER_TYPES:
+        if field == filter_field:
+            label = f"{emoji} {lab}"
+            break
+    await apply_filter_action(
+        bot, first.chat.id, first.from_user.id, first.from_user.username,
+        [m.message_id for m in messages], action, label,
     )
 
 
 async def _refresh_chat_meta(message: Message) -> None:
-    """Actualiza metadatos de chat y usuaria en BD."""
     try:
-        await upsert_bot_chat(
-            message.chat.id, message.chat.title, message.chat.type
-        )
-        await update_chat_title(message.chat.id, message.chat.title or "")
+        await upsert_bot_chat(message.chat.id, message.chat.title, message.chat.type)
+        if message.chat.title:
+            await update_chat_title(message.chat.id, message.chat.title)
         if message.from_user and not message.from_user.is_bot:
             await cache_user(
-                message.chat.id,
-                message.from_user.id,
-                message.from_user.username,
-                message.from_user.full_name,
+                message.chat.id, message.from_user.id,
+                message.from_user.username, message.from_user.full_name,
             )
     except Exception as e:
         logger.debug("refresh meta error: %s", e)
 
 
-async def _process_publication(bot: Bot, messages: list[Message]) -> None:
-    """
-    Procesa una publicación completa (1 mensaje o álbum N mensajes).
-    Aplica las 3 reglas y, si fallan, castiga.
-    """
+async def _process_publication(
+    bot: Bot, messages: list[Message], exempt: bool = False,
+) -> None:
+    """Procesa foto/video (mensaje único o álbum)."""
     if not messages:
         return
     first = messages[0]
@@ -82,49 +205,61 @@ async def _process_publication(bot: Bot, messages: list[Message]) -> None:
     message_ids = [m.message_id for m in messages]
     media_group_id = first.media_group_id
 
-    # 0. Exenta? (admin o alianza) → publicar y registrar
-    if await is_exempt(bot, chat_id, user_id):
-        # Registramos con hash básico (foto solo del primer item para no inflar)
-        await _register_post(bot, first, user_id, username, media_group_id)
+    # Exenta: solo registrar para detección futura
+    if exempt:
+        phash_hex, vid_size, vid_dur = await _hash_first_media(bot, first)
+        await posts_db.insert_post(
+            chat_id=chat_id, user_id=user_id, username=username,
+            message_id=first.message_id, media_group_id=media_group_id,
+            phash=phash_hex, video_size=vid_size, video_duration=vid_dur,
+        )
         await log_action(chat_id, "post", user_id=user_id, username=username,
                          rule=None, details="exempt")
         return
 
     cfg = await get_config(chat_id)
 
-    # === 1. Calcular hash del primer ítem del mensaje/álbum ===
+    # /forcepost: pase libre
+    if _consume_force_pass(chat_id, user_id):
+        phash_hex, vid_size, vid_dur = await _hash_first_media(bot, first)
+        await posts_db.insert_post(
+            chat_id=chat_id, user_id=user_id, username=username,
+            message_id=first.message_id, media_group_id=media_group_id,
+            phash=phash_hex, video_size=vid_size, video_duration=vid_dur,
+        )
+        await log_action(chat_id, "post", user_id=user_id, username=username,
+                         rule=None, details="forcepost")
+        return
+
+    # Calcular hash (puede ser None si falla)
     phash_hex, vid_size, vid_dur = await _hash_first_media(bot, first)
 
-    # === 2. Regla 3: ANTI-DUPLICADO ===
-    if phash_hex or vid_size:
-        dup = await _check_duplicate(
-            cfg, chat_id, phash_hex, vid_size, vid_dur
-        )
+    # Regla 3: ANTI-DUPLICADO (si está activada)
+    if int(cfg.get("antidup_enabled", 1)) and (phash_hex or vid_size):
+        dup = await _check_duplicate(cfg, chat_id, phash_hex, vid_size, vid_dur)
         if dup:
             await apply_punishment(
                 bot, chat_id, user_id, username,
-                message_ids=message_ids,
-                rule="antidup",
+                message_ids=message_ids, rule="antidup",
                 extra_info=f"Ya se publicó hace menos de {cfg['antidup_hours']}h.",
             )
             return
 
-    # === 3. Regla 2: COOLDOWN ===
+    # Regla 2: COOLDOWN
     last_time = await posts_db.get_last_post_time(chat_id, user_id)
-    if last_time is not None:
+    if int(cfg.get("cooldown_enabled", 1)) and last_time is not None:
         cooldown_until = last_time + timedelta(minutes=int(cfg["cooldown_minutes"]))
         if datetime.utcnow() < cooldown_until:
             remaining = time_until(cooldown_until)
             await apply_punishment(
                 bot, chat_id, user_id, username,
-                message_ids=message_ids,
-                rule="cooldown",
+                message_ids=message_ids, rule="cooldown",
                 extra_info=f"Espera {remaining}.",
             )
             return
 
-    # === 4. Regla 1: COLA ROTATORIA ===
-    if last_time is not None:
+    # Regla 1: COLA
+    if int(cfg.get("queue_enabled", 1)) and last_time is not None:
         n_distinct = await posts_db.count_distinct_users_after(
             chat_id, last_time, exclude_user_id=user_id,
         )
@@ -133,54 +268,41 @@ async def _process_publication(bot: Bot, messages: list[Message]) -> None:
             missing = queue_size - n_distinct
             await apply_punishment(
                 bot, chat_id, user_id, username,
-                message_ids=message_ids,
-                rule="queue",
+                message_ids=message_ids, rule="queue",
                 extra_info=f"Faltan {missing} chicas por publicar antes de tu turno.",
             )
             return
 
-    # === 5. Todas las reglas pasaron → registrar ===
-    await _register_post_full(
-        chat_id, user_id, username,
-        message_id=first.message_id,
-        media_group_id=media_group_id,
-        phash=phash_hex,
-        video_size=vid_size,
-        video_duration=vid_dur,
+    # Todas las reglas pasaron: registrar
+    await posts_db.insert_post(
+        chat_id=chat_id, user_id=user_id, username=username,
+        message_id=first.message_id, media_group_id=media_group_id,
+        phash=phash_hex, video_size=vid_size, video_duration=vid_dur,
     )
     await log_action(chat_id, "post", user_id=user_id, username=username,
                      rule=None, details=f"items={len(messages)}")
 
 
 async def _hash_first_media(
-    bot: Bot, message: Message
+    bot: Bot, message: Message,
 ) -> tuple[Optional[str], Optional[int], Optional[int]]:
-    """
-    Descarga el primer media y calcula hash.
-    Devuelve (phash_hex, video_size_bytes, video_duration_seconds).
-    Para fotos: phash, None, None.
-    Para vídeos: phash_del_primer_frame, file_size, duration.
-    """
+    """Devuelve (phash_hex, video_size, video_duration)."""
     try:
         if message.photo:
-            # Tomamos la versión de mayor resolución
             photo = message.photo[-1]
             file = await bot.get_file(photo.file_id)
             buf = BytesIO()
             await bot.download_file(file.file_path, destination=buf)
-            data = buf.getvalue()
-            phash = await phash_image(data)
+            phash = await phash_image(buf.getvalue())
             return phash, None, None
         if message.video:
             video = message.video
             file = await bot.get_file(video.file_id)
             buf = BytesIO()
             await bot.download_file(file.file_path, destination=buf)
-            data = buf.getvalue()
-            phash = await phash_video_first_frame(data)
+            phash = await phash_video_first_frame(buf.getvalue())
             return phash, video.file_size, video.duration
     except TelegramBadRequest as e:
-        # Archivo demasiado grande para descargar via Bot API (>20MB)
         logger.warning("No se pudo descargar media: %s", e)
         if message.video:
             return None, message.video.file_size, message.video.duration
@@ -190,69 +312,112 @@ async def _hash_first_media(
 
 
 async def _check_duplicate(
-    cfg: dict,
-    chat_id: int,
-    phash_hex: Optional[str],
-    vid_size: Optional[int],
-    vid_dur: Optional[int],
+    cfg: dict, chat_id: int,
+    phash_hex: Optional[str], vid_size: Optional[int], vid_dur: Optional[int],
 ) -> Optional[dict]:
-    """Devuelve el post duplicado encontrado, o None."""
     threshold = int(cfg["phash_threshold"])
     hours = int(cfg["antidup_hours"])
     if vid_size and vid_dur:
         return await posts_db.find_duplicate_video(
-            chat_id, phash_hex, vid_size, vid_dur, threshold, hours
+            chat_id, phash_hex, vid_size, vid_dur, threshold, hours,
         )
     if phash_hex:
-        return await posts_db.find_duplicate_photo(
-            chat_id, phash_hex, threshold, hours
-        )
+        return await posts_db.find_duplicate_photo(chat_id, phash_hex, threshold, hours)
     return None
 
 
-async def _register_post(
-    bot: Bot, message: Message, user_id: int, username: Optional[str],
-    media_group_id: Optional[str],
-) -> None:
-    """Registra un post mínimo (admin/alianza) calculando hash para detección futura."""
-    phash, vid_size, vid_dur = await _hash_first_media(bot, message)
-    await posts_db.insert_post(
-        chat_id=message.chat.id,
-        user_id=user_id,
-        username=username,
-        message_id=message.message_id,
-        media_group_id=media_group_id,
-        phash=phash,
-        video_size=vid_size,
-        video_duration=vid_dur,
-    )
-
-
-async def _register_post_full(
-    chat_id: int, user_id: int, username: Optional[str],
-    message_id: int, media_group_id: Optional[str],
-    phash: Optional[str], video_size: Optional[int], video_duration: Optional[int],
-) -> None:
-    await posts_db.insert_post(
-        chat_id=chat_id, user_id=user_id, username=username,
-        message_id=message_id, media_group_id=media_group_id,
-        phash=phash, video_size=video_size, video_duration=video_duration,
-    )
-
-
-# === EVENTO: bot añadido/quitado de un chat ===
+# === Evento my_chat_member: bot añadido/quitado de un chat ===
 @router.my_chat_member()
-async def on_bot_chat_member(event, bot: Bot) -> None:
-    """Actualiza bot_chats cuando el bot entra o sale de un chat."""
+async def on_bot_chat_member(event: ChatMemberUpdated, bot: Bot) -> None:
+    """
+    Cuando el bot entra o sale de un chat:
+    - Si entra a un grupo nuevo, crea licencia 'pending' (o 'owner' si es nuestro chat)
+      y manda mensaje al grupo + DM al owner.
+    - Si sale, borra la licencia.
+    """
     chat = event.chat
+    new_status = event.new_chat_member.status
+
+    if new_status in ("left", "kicked"):
+        await remove_bot_chat(chat.id)
+        await licenses_db.delete_license(chat.id)
+        logger.info("👋 Bot expulsado/salido de %s (%s)", chat.id, chat.title)
+        return
+
+    if chat.type not in ("group", "supergroup"):
+        return
+
+    await upsert_bot_chat(chat.id, chat.title, chat.type)
+
+    # Si ya existe licencia, solo upgrade (admin etc.), no hacer más
+    existing = await licenses_db.get_license(chat.id)
+    if existing is not None:
+        return
+
+    # Detectar quién lo añadió
+    actor = event.from_user
+    actor_id = actor.id if actor else None
+    actor_username = actor.username if actor else None
+    actor_name = actor.full_name if actor else "alguien"
+
+    # ¿Lo añadió el owner?
+    if is_owner(actor_id):
+        await licenses_db.create_license(
+            chat_id=chat.id, status="owner",
+            added_by_user_id=actor_id, added_by_username=actor_username,
+            activated_by=actor_id,
+        )
+        try:
+            await bot.send_message(
+                chat.id,
+                "👑 <b>Bot activado en este grupo (propietario)</b>\n\n"
+                "Tienes acceso completo. Usa /menu para configurarme.",
+            )
+        except TelegramBadRequest:
+            pass
+        return
+
+    # Pending
+    await licenses_db.create_license(
+        chat_id=chat.id, status="pending",
+        added_by_user_id=actor_id, added_by_username=actor_username,
+    )
+
+    # Mensaje en el grupo
     try:
-        new_status = event.new_chat_member.status
-        if new_status in ("left", "kicked"):
-            from database.stats import remove_bot_chat
-            await remove_bot_chat(chat.id)
-            logger.info("👋 Bot expulsado/salido de %s", chat.id)
-        else:
-            await upsert_bot_chat(chat.id, chat.title, chat.type)
-            logger.info("✅ Bot añadido/actualizado en %s (%s)", chat.id, chat.title)
-    except Exception as e:
-        logger.exception("Error procesando my_chat_member: %s", e)
+        await bot.send_message(chat.id, subscription_pitch(chat.title))
+    except TelegramBadRequest as e:
+        logger.warning("No se pudo enviar pitch en %s: %s", chat.id, e)
+
+    # Aviso al owner
+    members_str = ""
+    try:
+        n_members = await bot.get_chat_member_count(chat.id)
+        members_str = f"👥 Miembros: {n_members}\n"
+    except TelegramBadRequest:
+        pass
+
+    actor_str = f'<a href="tg://user?id={actor_id}">{actor_name}</a>'
+    if actor_username:
+        actor_str = f"@{actor_username} (id <code>{actor_id}</code>)"
+
+    text = (
+        "🆕 <b>NUEVO GRUPO DETECTADO</b>\n\n"
+        f"📍 Grupo: <b>{chat.title}</b>\n"
+        f"🆔 Chat ID: <code>{chat.id}</code>\n"
+        f"👤 Añadido por: {actor_str}\n"
+        f"{members_str}\n"
+        "Estado: ⏳ <b>Pendiente</b>\n\n"
+        f"Usa /admin para activarlo cuando cobres."
+    )
+
+    # Botones rápidos para el owner
+    from aiogram.types import InlineKeyboardButton, InlineKeyboardMarkup
+    keyboard = InlineKeyboardMarkup(inline_keyboard=[
+        [InlineKeyboardButton(text="✅ Activar 30 días", callback_data=f"licext:{chat.id}:30")],
+        [InlineKeyboardButton(text="✅ Activar 90 días", callback_data=f"licext:{chat.id}:90")],
+        [InlineKeyboardButton(text="♾️ Activación permanente", callback_data=f"liclife:{chat.id}")],
+        [InlineKeyboardButton(text="🚫 Vetar grupo", callback_data=f"licban:{chat.id}")],
+        [InlineKeyboardButton(text="📋 Ver detalles", callback_data=f"licinfo:{chat.id}")],
+    ])
+    await notify_owner(bot, text, reply_markup=keyboard)
