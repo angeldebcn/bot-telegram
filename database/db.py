@@ -74,11 +74,11 @@ CREATE TABLE IF NOT EXISTS posts (
     posted_at       TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
     deleted_at      TIMESTAMP
 );
-CREATE INDEX IF NOT EXISTS idx_posts_chat_msg ON posts(chat_id, message_id);
-CREATE INDEX IF NOT EXISTS idx_posts_deleted ON posts(deleted_at);
 CREATE INDEX IF NOT EXISTS idx_posts_chat_user    ON posts(chat_id, user_id);
 CREATE INDEX IF NOT EXISTS idx_posts_chat_posted  ON posts(chat_id, posted_at);
 CREATE INDEX IF NOT EXISTS idx_posts_chat_phash   ON posts(chat_id, phash);
+CREATE INDEX IF NOT EXISTS idx_posts_chat_msg     ON posts(chat_id, message_id);
+-- Nota: idx_posts_deleted se crea en _migrate_posts (después de garantizar la columna)
 
 CREATE TABLE IF NOT EXISTS alianzas (
     chat_id    INTEGER NOT NULL,
@@ -167,7 +167,13 @@ async def _migrate_chat_config(db) -> None:
 
 
 async def _migrate_posts(db) -> None:
-    """Añade columna deleted_at a la tabla posts si no existe."""
+    """
+    Añade la columna deleted_at a posts si no existe y crea su índice.
+
+    IMPORTANTE: esto se ejecuta DESPUÉS del executescript del SCHEMA, para
+    poder crear el índice idx_posts_deleted con seguridad incluso cuando
+    la tabla ya existía (de versiones anteriores) sin la columna.
+    """
     cur = await db.execute("PRAGMA table_info(posts)")
     cols = {row[1] for row in await cur.fetchall()}
     if "deleted_at" not in cols:
@@ -177,15 +183,47 @@ async def _migrate_posts(db) -> None:
             logger.info("Migración: añadida columna posts.deleted_at")
         except aiosqlite.Error as e:
             logger.warning("No se pudo migrar posts.deleted_at: %s", e)
+            return
+    # Crear el índice (idempotente)
+    try:
+        await db.execute(
+            "CREATE INDEX IF NOT EXISTS idx_posts_deleted ON posts(deleted_at)"
+        )
+        await db.commit()
+    except aiosqlite.Error as e:
+        logger.warning("No se pudo crear idx_posts_deleted: %s", e)
 
 
 async def init_db() -> None:
-    """Inicializa la BD y aplica migraciones automáticas."""
+    """Inicializa la BD y aplica migraciones automáticas.
+
+    Si el SCHEMA falla (por ej. al pasar de una versión vieja), intentamos
+    igualmente las migraciones para reparar la BD.
+    """
     async with aiosqlite.connect(DB_PATH) as db:
-        await db.executescript(SCHEMA)
-        await db.commit()
-        await _migrate_chat_config(db)
-        await _migrate_posts(db)
+        try:
+            await db.executescript(SCHEMA)
+            await db.commit()
+        except aiosqlite.Error as e:
+            logger.warning(
+                "SCHEMA falló (probablemente migración necesaria): %s. "
+                "Intento migrar igualmente.", e,
+            )
+        # Migraciones (idempotentes y defensivas)
+        try:
+            await _migrate_chat_config(db)
+        except Exception as e:
+            logger.warning("Fallo migrando chat_config: %s", e)
+        try:
+            await _migrate_posts(db)
+        except Exception as e:
+            logger.warning("Fallo migrando posts: %s", e)
+        # Tras migración, re-ejecutar SCHEMA por si quedó algún CREATE pendiente
+        try:
+            await db.executescript(SCHEMA)
+            await db.commit()
+        except aiosqlite.Error as e:
+            logger.warning("Re-aplicación de SCHEMA falló: %s", e)
     logger.info("✅ Base de datos inicializada en %s", DB_PATH)
 
 
