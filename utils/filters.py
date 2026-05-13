@@ -39,14 +39,16 @@ def detect_message_type(message: Message) -> Optional[str]:
     """
     Devuelve la clave de filtro asociada al mensaje, o None si no aplica.
     Devuelve la PRIMERA categoría que matchea (orden de precedencia).
+
+    ⚠️ ORDEN CRÍTICO: primero detectamos el TIPO DE CONTENIDO real (foto,
+    vídeo, sticker, etc). Solo si no hay contenido detectable consideramos
+    meta-flags como "forwarded" o "via_bot".
+
+    Una foto REENVIADA sigue siendo una foto. Si la detectamos como
+    "forwarded" en lugar de "photo", el sistema count_X la ignoraría y la
+    chica podría spamear reenviando contenido sin pasar por la cola.
     """
-    # Forwarded (puede ser de usuario o canal)
-    if message.forward_origin or message.forward_from or message.forward_from_chat:
-        return "filter_forwarded"
-    # Vía bot
-    if message.via_bot:
-        return "filter_via_bot"
-    # Multimedia
+    # === 1. CONTENIDO MULTIMEDIA (prioridad máxima) ===
     if message.photo:
         return "filter_photo"
     if message.video:
@@ -54,19 +56,27 @@ def detect_message_type(message: Message) -> Optional[str]:
     if message.animation:
         return "filter_gif"
     if message.sticker:
-        # Diferenciar entre estático y animado/video
         st = message.sticker
         if getattr(st, "is_animated", False) or getattr(st, "is_video", False):
             return "filter_sticker_animated"
         return "filter_sticker"
-    if message.document:
-        return "filter_document"
+    if message.video_note:
+        return "filter_video_note"
     if message.voice:
         return "filter_voice"
     if message.audio:
         return "filter_audio"
-    if message.video_note:
-        return "filter_video_note"
+    if message.document:
+        # Algunos clientes mandan vídeos como documento. Lo tratamos como vídeo
+        # si el mime es de tipo video/image.
+        mime = (message.document.mime_type or "").lower()
+        if mime.startswith("video/"):
+            return "filter_video"
+        if mime.startswith("image/gif"):
+            return "filter_gif"
+        if mime.startswith("image/"):
+            return "filter_photo"
+        return "filter_document"
     if message.poll:
         return "filter_poll"
     if message.contact:
@@ -75,12 +85,18 @@ def detect_message_type(message: Message) -> Optional[str]:
         return "filter_location"
     if message.giveaway or getattr(message, "giveaway_winners", None):
         return "filter_giveaway"
-    # Texto
+
+    # === 2. META-FLAGS (solo si NO había contenido detectable) ===
+    # Estos solo aplican a mensajes que no son multimedia (p.ej. texto reenviado)
+    if message.forward_origin or message.forward_from or message.forward_from_chat:
+        return "filter_forwarded"
+    if message.via_bot:
+        return "filter_via_bot"
+
+    # === 3. TEXTO ===
     if message.text:
-        # Enlaces
         if _URL_RE.search(message.text):
             return "filter_links"
-        # Mayúsculas
         if _is_caps_text(message.text):
             return "filter_caps"
     elif message.caption:
