@@ -84,6 +84,19 @@ DEFAULTS: dict[str, int] = {
     "filter_forwarded": 0,
     "filter_caps": 0,
     "filter_links": 0,
+    # === TIPOS SUJETOS A LAS 3 REGLAS (cola/cooldown/antidup) ===
+    # 1 = el bot vigila este tipo bajo las reglas. 0 = lo ignora.
+    # Foto y vídeo van ON por defecto (caso principal del bot).
+    # Los demás van OFF: actívalos si en tu grupo cuentan como publicación.
+    "count_photo": 1,
+    "count_video": 1,
+    "count_gif": 0,
+    "count_sticker": 0,
+    "count_sticker_animated": 0,
+    "count_voice": 0,
+    "count_audio": 0,
+    "count_video_note": 0,
+    "count_document": 0,
 }
 
 PUNISHMENT_TYPES: dict[int, tuple[str, str]] = {
@@ -122,6 +135,22 @@ FILTER_TYPES: list[tuple[str, str, str]] = [
     ("↪️", "Reenviado", "filter_forwarded"),
     ("🔠", "MAYÚSCULAS", "filter_caps"),
     ("🔗", "Enlaces", "filter_links"),
+]
+
+# Tipos que pueden estar sujetos a las 3 reglas (cola, cooldown, anti-dup).
+# Si count_X = 1, ese tipo cuenta como publicación. Si count_X = 0, el bot lo ignora.
+# (emoji, etiqueta, campo, soporta_antidup)
+# `soporta_antidup` = True si tiene contenido hasheable (foto/video/gif).
+COUNTABLE_TYPES: list[tuple[str, str, str, bool]] = [
+    ("📸", "Foto",            "count_photo",            True),
+    ("🎬", "Vídeo",           "count_video",            True),
+    ("🎞️", "GIF",             "count_gif",              True),
+    ("🎨", "Sticker",         "count_sticker",          False),
+    ("✨", "Sticker animado", "count_sticker_animated", False),
+    ("🎤", "Mensaje de voz",  "count_voice",            False),
+    ("🎵", "Audio",           "count_audio",            False),
+    ("📹", "Video redondo",   "count_video_note",       True),
+    ("📎", "Archivo",         "count_document",         False),
 ]
 
 QUEUE_OPTIONS: list[int] = [1, 3, 5, 7, 10, 15, 20, 25]
