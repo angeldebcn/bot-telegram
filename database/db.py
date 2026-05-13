@@ -1,16 +1,16 @@
-"""Conexión a SQLite y creación del esquema."""
+"""Conexión a SQLite y creación/migración del esquema."""
 import logging
 from contextlib import asynccontextmanager
 
 import aiosqlite
 
-from config import DB_PATH
+from config import DB_PATH, DEFAULTS
 
 logger = logging.getLogger(__name__)
 
 
 SCHEMA = """
--- Configuración por chat. Una fila por grupo.
+-- Configuración por chat
 CREATE TABLE IF NOT EXISTS chat_config (
     chat_id              INTEGER PRIMARY KEY,
     chat_title           TEXT,
@@ -18,33 +18,49 @@ CREATE TABLE IF NOT EXISTS chat_config (
     cooldown_minutes     INTEGER NOT NULL DEFAULT 30,
     antidup_hours        INTEGER NOT NULL DEFAULT 12,
     phash_threshold      INTEGER NOT NULL DEFAULT 5,
-    -- Castigos por regla (1..6)
+    queue_enabled        INTEGER NOT NULL DEFAULT 1,
+    cooldown_enabled     INTEGER NOT NULL DEFAULT 1,
+    antidup_enabled      INTEGER NOT NULL DEFAULT 1,
     punishment_queue     INTEGER NOT NULL DEFAULT 2,
     punishment_cooldown  INTEGER NOT NULL DEFAULT 2,
     punishment_antidup   INTEGER NOT NULL DEFAULT 2,
-    -- Duración aviso autodestructivo en segundos
     notice_queue_seconds    INTEGER NOT NULL DEFAULT 15,
     notice_cooldown_seconds INTEGER NOT NULL DEFAULT 15,
     notice_antidup_seconds  INTEGER NOT NULL DEFAULT 30,
-    -- Duración mute en segundos
     mute_queue_seconds      INTEGER NOT NULL DEFAULT 3600,
     mute_cooldown_seconds   INTEGER NOT NULL DEFAULT 3600,
     mute_antidup_seconds    INTEGER NOT NULL DEFAULT 3600,
-    -- Sistema de warns
     warn_limit              INTEGER NOT NULL DEFAULT 3,
     warn_expiration_days    INTEGER NOT NULL DEFAULT 7,
     warn_final_action       INTEGER NOT NULL DEFAULT 4,
     warn_final_mute_seconds INTEGER NOT NULL DEFAULT 3600,
-    -- Avanzadas
-    admin_only_menu      INTEGER NOT NULL DEFAULT 1,
-    autoclean_days       INTEGER NOT NULL DEFAULT 30,
-    silence_mode         INTEGER NOT NULL DEFAULT 0,
+    admin_only_menu         INTEGER NOT NULL DEFAULT 1,
+    autoclean_days          INTEGER NOT NULL DEFAULT 30,
+    silence_mode            INTEGER NOT NULL DEFAULT 0,
+    locked                  INTEGER NOT NULL DEFAULT 0,
+    delete_service_messages INTEGER NOT NULL DEFAULT 0,
+    -- Filtros (todos a 0 = Off por defecto)
+    filter_photo            INTEGER NOT NULL DEFAULT 0,
+    filter_video            INTEGER NOT NULL DEFAULT 0,
+    filter_gif              INTEGER NOT NULL DEFAULT 0,
+    filter_sticker          INTEGER NOT NULL DEFAULT 0,
+    filter_sticker_animated INTEGER NOT NULL DEFAULT 0,
+    filter_document         INTEGER NOT NULL DEFAULT 0,
+    filter_voice            INTEGER NOT NULL DEFAULT 0,
+    filter_audio            INTEGER NOT NULL DEFAULT 0,
+    filter_video_note       INTEGER NOT NULL DEFAULT 0,
+    filter_poll             INTEGER NOT NULL DEFAULT 0,
+    filter_contact          INTEGER NOT NULL DEFAULT 0,
+    filter_location         INTEGER NOT NULL DEFAULT 0,
+    filter_giveaway         INTEGER NOT NULL DEFAULT 0,
+    filter_via_bot          INTEGER NOT NULL DEFAULT 0,
+    filter_forwarded        INTEGER NOT NULL DEFAULT 0,
+    filter_caps             INTEGER NOT NULL DEFAULT 0,
+    filter_links            INTEGER NOT NULL DEFAULT 0,
     created_at           TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
     updated_at           TIMESTAMP DEFAULT CURRENT_TIMESTAMP
 );
 
--- Publicaciones permitidas (las que pasaron las 3 reglas).
--- Si una se borra, NO se inserta aquí (no cuenta para nada).
 CREATE TABLE IF NOT EXISTS posts (
     id              INTEGER PRIMARY KEY AUTOINCREMENT,
     chat_id         INTEGER NOT NULL,
@@ -61,7 +77,6 @@ CREATE INDEX IF NOT EXISTS idx_posts_chat_user    ON posts(chat_id, user_id);
 CREATE INDEX IF NOT EXISTS idx_posts_chat_posted  ON posts(chat_id, posted_at);
 CREATE INDEX IF NOT EXISTS idx_posts_chat_phash   ON posts(chat_id, phash);
 
--- Alianzas: usuarias exentas de las 3 reglas.
 CREATE TABLE IF NOT EXISTS alianzas (
     chat_id    INTEGER NOT NULL,
     user_id    INTEGER NOT NULL,
@@ -70,7 +85,6 @@ CREATE TABLE IF NOT EXISTS alianzas (
     PRIMARY KEY (chat_id, user_id)
 );
 
--- Advertencias acumulativas (sistema warns).
 CREATE TABLE IF NOT EXISTS warns (
     id          INTEGER PRIMARY KEY AUTOINCREMENT,
     chat_id     INTEGER NOT NULL,
@@ -83,7 +97,6 @@ CREATE TABLE IF NOT EXISTS warns (
 CREATE INDEX IF NOT EXISTS idx_warns_chat_user ON warns(chat_id, user_id);
 CREATE INDEX IF NOT EXISTS idx_warns_expires   ON warns(expires_at);
 
--- Log de acciones del bot (para /logs y estadísticas).
 CREATE TABLE IF NOT EXISTS actions_log (
     id          INTEGER PRIMARY KEY AUTOINCREMENT,
     chat_id     INTEGER NOT NULL,
@@ -96,7 +109,6 @@ CREATE TABLE IF NOT EXISTS actions_log (
 );
 CREATE INDEX IF NOT EXISTS idx_log_chat_ts ON actions_log(chat_id, timestamp);
 
--- Chats donde está el bot (para /menu en privado con selector de grupo).
 CREATE TABLE IF NOT EXISTS bot_chats (
     chat_id    INTEGER PRIMARY KEY,
     chat_title TEXT,
@@ -104,7 +116,6 @@ CREATE TABLE IF NOT EXISTS bot_chats (
     last_seen  TIMESTAMP DEFAULT CURRENT_TIMESTAMP
 );
 
--- Usuarias vistas (cache de username -> user_id para resolución).
 CREATE TABLE IF NOT EXISTS users_cache (
     chat_id    INTEGER NOT NULL,
     user_id    INTEGER NOT NULL,
@@ -114,25 +125,55 @@ CREATE TABLE IF NOT EXISTS users_cache (
     PRIMARY KEY (chat_id, user_id)
 );
 CREATE INDEX IF NOT EXISTS idx_users_username ON users_cache(chat_id, username);
+
+-- Sistema de licencias por chat
+CREATE TABLE IF NOT EXISTS licenses (
+    chat_id              INTEGER PRIMARY KEY,
+    status               TEXT NOT NULL DEFAULT 'pending',
+    expires_at           TIMESTAMP,
+    activated_at         TIMESTAMP,
+    activated_by         INTEGER,
+    added_by_user_id     INTEGER,
+    added_by_username    TEXT,
+    notes                TEXT,
+    notified_expiry_warn INTEGER NOT NULL DEFAULT 0,
+    created_at           TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+    updated_at           TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+);
+CREATE INDEX IF NOT EXISTS idx_licenses_status ON licenses(status);
+CREATE INDEX IF NOT EXISTS idx_licenses_expires ON licenses(expires_at);
 """
 
 
-_db_initialized = False
+async def _migrate_chat_config(db) -> None:
+    """Añade columnas nuevas a chat_config si no existen."""
+    cur = await db.execute("PRAGMA table_info(chat_config)")
+    cols = {row[1] for row in await cur.fetchall()}
+    missing = [k for k in DEFAULTS if k not in cols]
+    for field in missing:
+        default = DEFAULTS[field]
+        try:
+            await db.execute(
+                f"ALTER TABLE chat_config ADD COLUMN {field} INTEGER NOT NULL DEFAULT {default}"
+            )
+            logger.info("Migración: añadida columna chat_config.%s", field)
+        except aiosqlite.Error as e:
+            logger.warning("No se pudo migrar columna %s: %s", field, e)
+    if missing:
+        await db.commit()
 
 
 async def init_db() -> None:
-    """Inicializa la BD creando el esquema si no existe."""
-    global _db_initialized
+    """Inicializa la BD y aplica migraciones automáticas."""
     async with aiosqlite.connect(DB_PATH) as db:
         await db.executescript(SCHEMA)
         await db.commit()
-    _db_initialized = True
+        await _migrate_chat_config(db)
     logger.info("✅ Base de datos inicializada en %s", DB_PATH)
 
 
 @asynccontextmanager
 async def get_db():
-    """Context manager para una conexión a la BD."""
     async with aiosqlite.connect(DB_PATH) as db:
         db.row_factory = aiosqlite.Row
         yield db
