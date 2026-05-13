@@ -42,6 +42,7 @@ async def setup_commands(bot: Bot) -> None:
         BotCommand(command="unfreespam", description="🚫 Quitar de alianzas"),
         BotCommand(command="alianzas", description="📋 Ver lista de alianzas"),
         BotCommand(command="forcepost", description="⚡ Pase libre próxima publicación"),
+        BotCommand(command="cancel", description="↩️ Anular publicación (no cuenta)"),
         BotCommand(command="warn", description="⚠️ Advertir a una usuaria"),
         BotCommand(command="unwarn", description="✅ Quitar advertencia"),
         BotCommand(command="warns", description="📑 Ver advertencias"),

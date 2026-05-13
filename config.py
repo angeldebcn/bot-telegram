@@ -133,7 +133,7 @@ PHASH_OPTIONS: list[tuple[int, str]] = [
     (8, "🟡 Tolerante"),
     (12, "🔵 Agresiva"),
 ]
-NOTICE_DURATION_OPTIONS: list[int] = [5, 10, 15, 20, 30, 45, 60]
+NOTICE_DURATION_OPTIONS: list[int] = [0, 5, 10, 15, 20, 30, 45, 60]  # 0 = permanente
 MUTE_DURATION_OPTIONS: list[tuple[int, str]] = [
     (300, "5 min"),
     (900, "15 min"),
