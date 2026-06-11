@@ -1,0 +1,11 @@
+.env
+bot.db
+bot.db-journal
+backups/
+__pycache__/
+*.pyc
+*.pyo
+.venv/
+venv/
+.DS_Store
+*.log
