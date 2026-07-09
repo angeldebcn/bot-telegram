@@ -18,6 +18,7 @@ from aiogram.types import (
 from config import BOT_TOKEN, LOG_LEVEL, OWNER_USER_ID, OWNER_USERNAME
 from db import init_db
 from sanctions_db import init_sanctions_db
+import sanctions_commands
 import admin
 import callbacks
 import commands
@@ -88,6 +89,7 @@ async def main() -> None:
     # 4. callbacks (botones inline + valor personalizado en privado)
     # 5. media (catch-all final)
     dp.include_router(admin.router)
+    dp.include_router(sanctions_commands.router)
     dp.include_router(commands.router)
     dp.include_router(menu.router)
     dp.include_router(callbacks.router)
