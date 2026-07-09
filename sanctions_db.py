@@ -540,3 +540,92 @@ async def get_user_groups(user_id: int) -> list[int]:
             (user_id,),
         )
         return [int(r["chat_id"]) for r in await cur.fetchall()]
+
+
+# ===========================================================================
+# REPORTES (creados con /reporte, resueltos con los botones del grupo staff)
+# ===========================================================================
+async def create_report(
+    reporter_id: int,
+    reporter_name: Optional[str],
+    reporter_user: Optional[str],
+    target_id: Optional[int],
+    target_name: Optional[str],
+    target_user: Optional[str],
+    reason: Optional[str],
+    origin_chat: int,
+    origin_msg_id: int,
+) -> int:
+    """Crea un reporte en estado 'pending'. Devuelve su id."""
+    async with get_db() as db:
+        cur = await db.execute(
+            "INSERT INTO reports "
+            "(reporter_id, reporter_name, reporter_user, target_id, target_name, "
+            " target_user, reason, origin_chat, origin_msg_id, status) "
+            "VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
+            (reporter_id, reporter_name, reporter_user, target_id, target_name,
+             target_user, reason, origin_chat, origin_msg_id, REPORT_PENDING),
+        )
+        await db.commit()
+        return cur.lastrowid or 0
+
+
+async def set_report_staff_message(report_id: int, staff_chat: int, staff_msg_id: int) -> None:
+    """Guarda dónde se publicó el reporte en el grupo de staff (para editarlo luego)."""
+    async with get_db() as db:
+        await db.execute(
+            "UPDATE reports SET staff_chat = ?, staff_msg_id = ? WHERE id = ?",
+            (staff_chat, staff_msg_id, report_id),
+        )
+        await db.commit()
+
+
+async def get_report(report_id: int) -> Optional[dict]:
+    async with get_db() as db:
+        cur = await db.execute("SELECT * FROM reports WHERE id = ?", (report_id,))
+        row = await cur.fetchone()
+        return dict(row) if row else None
+
+
+async def resolve_report(
+    report_id: int, resolved_by: int, action: str,
+) -> Optional[dict]:
+    """
+    Marca un reporte como resuelto con la acción elegida.
+    Devuelve el reporte actualizado, o None si no existe o ya estaba resuelto.
+    """
+    now_iso = _now().isoformat(sep=" ")
+    async with get_db() as db:
+        cur = await db.execute(
+            "SELECT * FROM reports WHERE id = ? AND status = ?",
+            (report_id, REPORT_PENDING),
+        )
+        row = await cur.fetchone()
+        if not row:
+            return None
+        await db.execute(
+            "UPDATE reports SET status = ?, resolved_by = ?, resolved_action = ?, "
+            "resolved_at = ? WHERE id = ?",
+            (REPORT_RESOLVED, resolved_by, action, now_iso, report_id),
+        )
+        await db.commit()
+        return dict(row)
+
+
+async def get_pending_reports() -> list[dict]:
+    """Reportes que aún nadie ha resuelto (para /pendientes)."""
+    async with get_db() as db:
+        cur = await db.execute(
+            "SELECT * FROM reports WHERE status = ? ORDER BY created_at ASC",
+            (REPORT_PENDING,),
+        )
+        return [dict(r) for r in await cur.fetchall()]
+
+
+async def count_pending_reports() -> int:
+    async with get_db() as db:
+        cur = await db.execute(
+            "SELECT COUNT(*) AS n FROM reports WHERE status = ?", (REPORT_PENDING,)
+        )
+        row = await cur.fetchone()
+        return int(row["n"] or 0)
