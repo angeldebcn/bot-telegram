@@ -104,6 +104,12 @@ async def handle_group_message(message: Message, bot: Bot) -> None:
     if int(cfg.get("locked", 0)):
         return
 
+    # 2b. Roles de grupo: si este grupo NO aplica las 3 reglas
+    # (ej. grupo de verificadas o de staff), no moderar aquí.
+    import roles_db
+    if not await roles_db.group_applies_rules(message.chat.id):
+        return
+
     # 3. Si es admin o alianza, dejar pasar sin tocar
     user_id = message.from_user.id
     if await is_exempt(bot, message.chat.id, user_id):
