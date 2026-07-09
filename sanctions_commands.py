@@ -249,18 +249,16 @@ async def cmd_ban(message: Message, bot: Bot) -> None:
     if error:
         await message.reply(error)
         return
-    if not reason or not reason.strip():
-        await message.reply(
-            "❌ Falta la razón.\n\nEjemplo: <code>/ban @usuario spam reiterado</code>"
-        )
-        return
     if OWNER_USER_ID is not None and uid == OWNER_USER_ID:
         await message.reply("❌ No puedo sancionar al dueño del bot.")
         return
 
+    # La razón es opcional en /ban. Si no se escribe, se usa un texto por defecto.
+    reason = (reason or "").strip() or "Baneado por el staff"
+
     await _delete_command_msg(bot, message)
     await sanctions_actions.apply_ban_action(
-        bot, uid, username, full_name, reason.strip(),
+        bot, uid, username, full_name, reason,
         issued_by=message.from_user.id, issued_in_chat=message.chat.id,
         notice_scope="here",
     )
