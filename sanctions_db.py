@@ -629,3 +629,89 @@ async def count_pending_reports() -> int:
         )
         row = await cur.fetchone()
         return int(row["n"] or 0)
+
+
+# ===========================================================================
+# LISTADO GLOBAL DE SANCIONADOS (para /lista y /buscar)
+# ===========================================================================
+async def get_all_active_sanctioned() -> dict:
+    """
+    Devuelve todos los usuarios con sanciones activas, agrupados por categoría.
+
+    Estructura:
+      {
+        "leve":  [ficha, ficha, ...],   # usuarios cuya máxima sanción es warn leve
+        "grave": [ficha, ...],          # usuarios con algún warn grave (no baneados)
+        "ban":   [ficha, ...],          # usuarios baneados
+      }
+
+    Cada ficha:
+      {
+        user_id, username, full_name,
+        reason_short,        # razón de la sanción más reciente
+        expires_at,          # caducidad más próxima (None si ban)
+        points,              # puntos activos
+      }
+
+    Un usuario aparece en UNA sola categoría (la más severa que tenga):
+    ban > grave > leve.
+    """
+    await expire_old_sanctions()
+    async with get_db() as db:
+        # Traer todos los user_id con al menos una sanción activa
+        cur = await db.execute(
+            "SELECT DISTINCT user_id FROM sanctions WHERE status = ?",
+            (STATUS_ACTIVE,),
+        )
+        user_ids = [int(r["user_id"]) for r in await cur.fetchall()]
+
+    result = {"leve": [], "grave": [], "ban": []}
+
+    for uid in user_ids:
+        status = await get_user_status(uid)
+        info = await get_sanctioned_user_info(uid)
+        username = info.get("username") if info else None
+        full_name = info.get("full_name") if info else None
+
+        # Determinar categoría (la más severa)
+        if status["banned"]:
+            category = "ban"
+        else:
+            # ¿tiene algún warn grave activo?
+            has_grave = any(s["kind"] == KIND_GRAVE for s in status["active"])
+            category = "grave" if has_grave else "leve"
+
+        # Razón de la sanción más reciente (de esa categoría o la última)
+        reason_short = None
+        relevant = None
+        for s in status["active"]:
+            if category == "ban" and s["kind"] == KIND_BAN:
+                relevant = s
+                break
+            if category == "grave" and s["kind"] == KIND_GRAVE:
+                relevant = s
+                break
+            if category == "leve" and s["kind"] == KIND_LEVE:
+                relevant = s
+                break
+        if relevant is None and status["active"]:
+            relevant = status["active"][0]
+        if relevant:
+            reason_short = relevant.get("reason_short") or "Sin motivo"
+
+        # Solo tiene sentido listar si hay algo activo relevante
+        if category == "leve" and not any(s["kind"] == KIND_LEVE for s in status["active"]):
+            # tiene solo mute u otra cosa; saltar
+            continue
+
+        ficha = {
+            "user_id": uid,
+            "username": username,
+            "full_name": full_name,
+            "reason_short": reason_short or "Sin motivo",
+            "expires_at": status["next_expiry"],
+            "points": status["points"],
+        }
+        result[category].append(ficha)
+
+    return result

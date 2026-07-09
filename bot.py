@@ -20,6 +20,7 @@ from db import init_db
 from sanctions_db import init_sanctions_db
 import sanctions_commands
 import reports
+import sanctions_panels
 import admin
 import callbacks
 import commands
@@ -91,6 +92,7 @@ async def main() -> None:
     # 5. media (catch-all final)
     dp.include_router(admin.router)
     dp.include_router(sanctions_commands.router)
+    dp.include_router(sanctions_panels.router)
     dp.include_router(reports.router)
     dp.include_router(commands.router)
     dp.include_router(menu.router)
