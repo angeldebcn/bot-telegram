@@ -440,6 +440,13 @@ async def on_bot_chat_member(event: ChatMemberUpdated, bot: Bot) -> None:
         logger.info("👋 Bot expulsado/salido de %s (%s)", chat.id, chat.title)
         return
 
+    # Canales: registrarlos para que aparezcan en el panel de config y se
+    # puedan usar para ejecutar sanciones (bans). No llevan licencia ni reglas.
+    if chat.type == "channel":
+        await upsert_bot_chat(chat.id, chat.title, chat.type)
+        logger.info("📢 Bot añadido/actualizado en canal %s (%s)", chat.id, chat.title)
+        return
+
     if chat.type not in ("group", "supergroup"):
         return
 
@@ -517,3 +524,18 @@ async def on_bot_chat_member(event: ChatMemberUpdated, bot: Bot) -> None:
         [InlineKeyboardButton(text="📋 Ver detalles", callback_data=f"licinfo:{chat.id}")],
     ])
     await notify_owner(bot, text, reply_markup=keyboard)
+
+
+# === Registro de canales: capturar posts de canal para registrarlos ===
+@router.channel_post()
+async def on_channel_post(message: Message, bot: Bot) -> None:
+    """
+    Cuando se publica algo en un canal donde está el bot, registramos el canal
+    en bot_chats para que aparezca en el panel de config y se pueda usar para
+    ejecutar sanciones (bans). No moderamos canales (no hay reglas de chicas).
+    """
+    try:
+        if message.chat and message.chat.type == "channel":
+            await upsert_bot_chat(message.chat.id, message.chat.title, "channel")
+    except Exception as e:
+        logger.debug("registro canal error: %s", e)

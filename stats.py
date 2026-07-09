@@ -123,11 +123,11 @@ async def remove_bot_chat(chat_id: int) -> None:
 
 
 async def list_bot_chats() -> list[dict]:
-    """Todos los chats donde el bot está activo (grupos/supergrupos)."""
+    """Todos los chats donde el bot está activo (grupos, supergrupos y canales)."""
     async with get_db() as db:
         cur = await db.execute(
             "SELECT chat_id, chat_title, chat_type, last_seen FROM bot_chats "
-            "WHERE chat_type IN ('group', 'supergroup') "
+            "WHERE chat_type IN ('group', 'supergroup', 'channel') "
             "ORDER BY last_seen DESC"
         )
         return [dict(r) for r in await cur.fetchall()]

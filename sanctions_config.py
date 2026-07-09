@@ -136,13 +136,18 @@ async def _groups_menu() -> InlineKeyboardMarkup:
     for chat in chats:
         cid = chat["chat_id"]
         title = _short_title(chat.get("chat_title"), cid)
+        chat_type = chat.get("chat_type", "supergroup")
         # Mostrar iconos de rol actual junto al nombre
         roles = await roles_db.get_group_roles(cid)
         marcas = ""
+        if chat_type == "channel":
+            marcas += "📢"
         if roles.get("is_verified_group"):
             marcas += "🎯"
         if roles.get("is_staff_group"):
             marcas += "👮"
+        if roles.get("applies_sanctions") and chat_type == "channel":
+            marcas += "🛡️"
         label = f"{title} {marcas}".strip()
         rows.append([InlineKeyboardButton(text=label, callback_data=f"cfg:grp:{cid}")])
     rows.append([InlineKeyboardButton(text="🔙 Volver", callback_data="cfg:main")])
@@ -179,20 +184,45 @@ async def cb_config_groups(cb: CallbackQuery, bot: Bot) -> None:
 
 
 async def _group_detail_menu(chat_id: int) -> tuple[str, InlineKeyboardMarkup]:
-    """Panel de un grupo concreto con sus 4 flags."""
+    """Panel de un grupo o canal concreto con sus flags."""
     roles = await roles_db.get_group_roles(chat_id)
     chats = await list_bot_chats()
     title = None
+    chat_type = "supergroup"
     for c in chats:
         if c["chat_id"] == chat_id:
             title = c.get("chat_title")
+            chat_type = c.get("chat_type", "supergroup")
             break
     title = _short_title(title, chat_id)
 
+    applies_sanctions = bool(roles.get("applies_sanctions"))
+
+    # === CANALES: panel simplificado (solo "se ejecutan sanciones") ===
+    if chat_type == "channel":
+        text = (
+            f"📢 <b>{title}</b>  (canal)\n"
+            f"🆔 <code>{chat_id}</code>\n\n"
+            "En un canal solo tiene sentido una opción:\n\n"
+            f"{_check(applies_sanctions)} <b>Se ejecutan sanciones</b>\n"
+            "   Si está activo, cuando alguien sea baneado de la comunidad "
+            "también será expulsado de este canal.\n\n"
+            "<i>Nota: para que el bot pueda expulsar de un canal, debe ser "
+            "administrador del canal con permiso para gestionar usuarios.</i>"
+        )
+        kb = InlineKeyboardMarkup(inline_keyboard=[
+            [InlineKeyboardButton(
+                text=f"{_check(applies_sanctions)} Se ejecutan sanciones",
+                callback_data=f"cfg:flag:{chat_id}:applies_sanctions",
+            )],
+            [InlineKeyboardButton(text="🔙 Volver a la lista", callback_data="cfg:groups")],
+        ])
+        return text, kb
+
+    # === GRUPOS: panel completo con los 4 flags ===
     is_verified = bool(roles.get("is_verified_group"))
     is_staff = bool(roles.get("is_staff_group"))
     applies_rules = bool(roles.get("applies_rules"))
-    applies_sanctions = bool(roles.get("applies_sanctions"))
 
     text = (
         f"🏷️ <b>{title}</b>\n"
