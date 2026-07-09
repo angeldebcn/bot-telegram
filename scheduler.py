@@ -15,6 +15,7 @@ import warns as warns_db
 from db import get_db
 from stats import cleanup_old_logs
 from license_helpers import expiring_soon_warning, notify_owner
+from sanctions_db import expire_old_sanctions
 
 logger = logging.getLogger(__name__)
 
@@ -112,6 +113,16 @@ async def licenses_daily(bot: Bot) -> None:
         await licenses_db.mark_expiry_warned(chat_id)
 
 
+async def sanctions_expiry_job() -> None:
+    """Expira warns caducados del sistema de sanciones (leve 90d, grave 6m)."""
+    try:
+        n = await expire_old_sanctions()
+        if n:
+            logger.info("⏳ Sanciones expiradas automáticamente: %d", n)
+    except Exception as e:
+        logger.warning("Error expirando sanciones: %s", e)
+
+
 def setup_scheduler(bot: Bot) -> AsyncIOScheduler:
     """Configura y devuelve el scheduler (sin arrancarlo)."""
     scheduler = AsyncIOScheduler(timezone="UTC")
@@ -120,5 +131,9 @@ def setup_scheduler(bot: Bot) -> AsyncIOScheduler:
     scheduler.add_job(
         licenses_daily, "cron", hour=9, minute=0, id="licenses_daily",
         args=[bot],
+    )
+    # Expiración de sanciones: cada hora (barato y mantiene los puntos al día)
+    scheduler.add_job(
+        sanctions_expiry_job, "interval", hours=1, id="sanctions_expiry",
     )
     return scheduler

@@ -17,6 +17,7 @@ from aiogram.types import (
 
 from config import BOT_TOKEN, LOG_LEVEL, OWNER_USER_ID, OWNER_USERNAME
 from db import init_db
+from sanctions_db import init_sanctions_db
 import admin
 import callbacks
 import commands
@@ -69,6 +70,7 @@ async def setup_commands(bot: Bot) -> None:
 
 async def main() -> None:
     await init_db()
+    await init_sanctions_db()
 
     bot = Bot(
         token=BOT_TOKEN,
