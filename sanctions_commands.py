@@ -158,7 +158,20 @@ def _parse_duration(text: str) -> Optional[int]:
 
 
 async def _delete_command_msg(bot: Bot, message: Message) -> None:
-    """Borra el mensaje del comando del staff (limpieza)."""
+    """
+    Borra el mensaje del comando del staff (limpieza) y, si el comando se usó
+    respondiendo a un mensaje, borra también ese mensaje respondido (que suele
+    ser la prueba de la infracción: el insulto, el spam, etc).
+    """
+    # 1. Borrar el mensaje al que se respondió (la infracción)
+    if message.reply_to_message:
+        try:
+            await bot.delete_message(
+                message.chat.id, message.reply_to_message.message_id,
+            )
+        except TelegramBadRequest:
+            pass
+    # 2. Borrar el propio comando del staff
     try:
         await bot.delete_message(message.chat.id, message.message_id)
     except TelegramBadRequest:
