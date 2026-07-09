@@ -1,148 +1,110 @@
+# -*- coding: utf-8 -*-
 """
-Bot de Telegram para moderación multimedia + SaaS.
-Punto de entrada principal.
+bot.py
+Punto de entrada. Arranca la base de datos, el bot, el planificador
+de tareas y empieza a escuchar Telegram en modo polling.
 """
 import asyncio
 import logging
-import sys
 
 from aiogram import Bot, Dispatcher
 from aiogram.client.default import DefaultBotProperties
 from aiogram.enums import ParseMode
-from aiogram.types import (
-    BotCommand,
-    BotCommandScopeAllChatAdministrators,
-    BotCommandScopeAllPrivateChats,
-)
+from aiogram.fsm.storage.memory import MemoryStorage
 
-from config import BOT_TOKEN, LOG_LEVEL, OWNER_USER_ID, OWNER_USERNAME
-from db import init_db
-from sanctions_db import init_sanctions_db
-import sanctions_commands
-import reports
-import sanctions_panels
-import sanctions_config
-import admin
-import callbacks
-import commands
-import media
-import menu
-from middleware import MetaCacheMiddleware
-from scheduler import setup_scheduler
+import config
+import database as db
+import broadcaster
+from broadcaster import scheduler
 
+# Routers (cada archivo h_*.py aporta su parte del bot).
+import h_menu
+import h_channels
+import h_promos
+import h_broadcast
+import h_campaigns
+import h_misc
+import h_alliances
+import h_backup
+import h_repost
 
 logging.basicConfig(
-    level=LOG_LEVEL,
-    format="%(asctime)s | %(levelname)-7s | %(name)s | %(message)s",
-    stream=sys.stdout,
+    level=logging.INFO,
+    format="%(asctime)s | %(levelname)s | %(name)s | %(message)s",
 )
-logger = logging.getLogger("bot")
-
-
-async def setup_commands(bot: Bot) -> None:
-    """Configura los comandos visibles del bot en distintos contextos."""
-    # Comandos visibles para administradores en los grupos.
-    # Incluye moderación de las 3 reglas + comandos de sanción de la comunidad.
-    admin_cmds = [
-        # Sanciones de comunidad (staff)
-        BotCommand(command="warnleve", description="⚠️ Warn leve (1 punto)"),
-        BotCommand(command="warngrave", description="⛔ Warn grave (2 puntos)"),
-        BotCommand(command="ban", description="🚫 Banear de toda la comunidad"),
-        BotCommand(command="mute7", description="🔇 Silenciar 7 días"),
-        BotCommand(command="mute", description="🔇 Silenciar (ej: /mute @u 3d motivo)"),
-        BotCommand(command="delete", description="🗑️ Borrar post con motivo (responde)"),
-        BotCommand(command="unwarnleve", description="↩️ Quitar warn leve"),
-        BotCommand(command="unwarngrave", description="↩️ Quitar warn grave"),
-        BotCommand(command="unban", description="↩️ Quitar ban"),
-        BotCommand(command="unmute", description="↩️ Quitar silencio"),
-        # Reportes y consultas (staff)
-        BotCommand(command="reporte", description="🚨 Reportar (solo grupo verificadas)"),
-        BotCommand(command="lista", description="📋 Lista de sancionados"),
-        BotCommand(command="buscar", description="🔎 Buscar a una persona"),
-        BotCommand(command="pendientes", description="⏳ Reportes sin resolver"),
-        # Moderación de las 3 reglas
-        BotCommand(command="menu", description="🤖 Configurar el bot del grupo"),
-        BotCommand(command="status", description="📊 Estado del grupo"),
-        BotCommand(command="lock", description="🔕 Pausar el bot"),
-        BotCommand(command="unlock", description="✅ Reanudar el bot"),
-        BotCommand(command="freespam", description="👥 Añadir a alianzas"),
-        BotCommand(command="unfreespam", description="🚫 Quitar de alianzas"),
-        BotCommand(command="alianzas", description="📋 Ver alianzas"),
-        BotCommand(command="forcepost", description="⚡ Pase libre próxima publicación"),
-        BotCommand(command="cancel", description="↩️ Anular publicación (no cuenta)"),
-        BotCommand(command="whocanpost", description="✏️ Quién puede publicar ahora"),
-        BotCommand(command="myturn", description="⏳ Cuándo me toca"),
-        BotCommand(command="help", description="📚 Lista de comandos"),
-    ]
-    # Comandos en privado: SOLO para el owner (config del sistema).
-    # A los demás no les mostramos comandos privados.
-    private_cmds = [
-        BotCommand(command="config", description="⚙️ Configurar roles y staff"),
-        BotCommand(command="lista", description="📋 Ver sancionados"),
-        BotCommand(command="buscar", description="🔎 Buscar a una persona"),
-        BotCommand(command="pendientes", description="⏳ Reportes sin resolver"),
-        BotCommand(command="addstaff", description="👮 Añadir staff"),
-        BotCommand(command="help", description="📚 Todos los comandos"),
-    ]
-    await bot.set_my_commands(admin_cmds, scope=BotCommandScopeAllChatAdministrators())
-    await bot.set_my_commands(private_cmds, scope=BotCommandScopeAllPrivateChats())
+log = logging.getLogger("mala-bot")
 
 
 async def main() -> None:
-    await init_db()
-    await init_sanctions_db()
+    # 1) Base de datos
+    await db.init_db()
+    log.info(f"Base de datos lista en {config.DB_PATH}")
 
+    # 2) Bot y dispatcher (parse_mode HTML por defecto)
     bot = Bot(
-        token=BOT_TOKEN,
+        token=config.BOT_TOKEN,
         default=DefaultBotProperties(parse_mode=ParseMode.HTML),
     )
-    dp = Dispatcher()
+    dp = Dispatcher(storage=MemoryStorage())
 
-    # Middleware: cachea metadata
-    dp.message.middleware(MetaCacheMiddleware())
+    # --- Red de seguridad global ---
+    # Algunos botones redibujan un mensaje idéntico y Telegram responde
+    # "message is not modified". Eso no es un fallo real, pero si no se
+    # captura, tumba el procesamiento del evento. Este middleware lo
+    # ignora silenciosamente para TODOS los callbacks del bot.
+    from aiogram.exceptions import TelegramBadRequest as _TBR
 
-    # Routers en orden:
-    # 1. admin (owner-only, captura /admin primero)
-    # 2. commands (resto de /comandos)
-    # 3. menu (/menu)
-    # 4. callbacks (botones inline + valor personalizado en privado)
-    # 5. media (catch-all final)
-    dp.include_router(admin.router)
-    dp.include_router(sanctions_config.router)
-    dp.include_router(sanctions_commands.router)
-    dp.include_router(sanctions_panels.router)
-    dp.include_router(reports.router)
-    dp.include_router(commands.router)
-    dp.include_router(menu.router)
-    dp.include_router(callbacks.router)
-    dp.include_router(media.router)
+    @dp.callback_query.middleware
+    async def _ignorar_no_modificado(handler, event, data):
+        try:
+            return await handler(event, data)
+        except _TBR as e:
+            if "message is not modified" in str(e).lower():
+                try:
+                    await event.answer()
+                except Exception:
+                    pass
+                return None
+            raise
 
-    # Scheduler
-    scheduler = setup_scheduler(bot)
-    scheduler.start()
+    # 3) Registrar todos los routers
+    dp.include_router(h_menu.router)
+    dp.include_router(h_channels.router)
+    dp.include_router(h_promos.router)
+    dp.include_router(h_broadcast.router)
+    dp.include_router(h_campaigns.router)
+    dp.include_router(h_alliances.router)
+    dp.include_router(h_backup.router)
+    dp.include_router(h_repost.router)
+    dp.include_router(h_misc.router)
 
-    await setup_commands(bot)
+    # 4) Planificador de tareas (campañas y autoborrados)
+    if not scheduler.running:
+        scheduler.start()
 
-    # Banner de arranque
-    if OWNER_USER_ID:
-        logger.info("👑 Owner configurado: user_id=%s @%s", OWNER_USER_ID, OWNER_USERNAME)
-    else:
-        logger.warning(
-            "⚠️ OWNER_USER_ID no configurado. El sistema de licencias está "
-            "en modo libre (cualquier grupo puede usar el bot).",
-        )
-    logger.info("🤖 Bot arrancando en modo polling...")
+    # 5) Recuperar trabajos pendientes tras un posible reinicio
+    await broadcaster.restaurar(bot)
+    # Backup automático semanal
+    h_backup.programar_backup_automatico(bot)
 
-    try:
-        await bot.delete_webhook(drop_pending_updates=True)
-        await dp.start_polling(bot, allowed_updates=dp.resolve_used_update_types())
-    finally:
-        scheduler.shutdown()
-        await bot.session.close()
+    # 6) Arrancar
+    me = await bot.get_me()
+    log.info(f"🤖 Bot @{me.username} arrancado correctamente")
+    if config.OWNER_ID:
+        try:
+            await bot.send_message(
+                config.OWNER_ID,
+                "🟢 Bot de difusión MALA STUDIOS en marcha.\n"
+                "Escribe /menu para empezar.")
+        except Exception:
+            pass
+
+    await dp.start_polling(
+        bot, allowed_updates=dp.resolve_used_update_types())
 
 
 if __name__ == "__main__":
     try:
         asyncio.run(main())
     except (KeyboardInterrupt, SystemExit):
-        logger.info("🛑 Bot detenido manualmente.")
+        log.info("Bot detenido.")
