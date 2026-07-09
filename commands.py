@@ -14,7 +14,6 @@ from aiogram.types import BufferedInputFile, Message
 from config import OWNER_USERNAME
 import alianzas as alianzas_db
 import posts as posts_db
-import warns as warns_db
 from config_db import (
     export_config_json,
     get_config,
@@ -34,7 +33,6 @@ import es
 from helpers import format_minutes, mention_html, safe_username, time_until
 from license_helpers import chat_is_allowed, is_owner
 from permissions import can_delete_messages, is_admin, is_exempt
-from punishment import manual_warn
 
 logger = logging.getLogger(__name__)
 router = Router(name="commands")
@@ -140,13 +138,13 @@ async def _check_admin_in_group(message: Message, bot: Bot) -> bool:
 @router.message(CommandStart())
 async def cmd_start(message: Message) -> None:
     if message.chat.type == ChatType.PRIVATE:
-        await message.answer(es.START_PRIVATE.format(owner=OWNER_USERNAME))
+        # Panel privado: SOLO el owner. A cualquier otra persona, silencio total.
+        if not message.from_user or not is_owner(message.from_user.id):
+            return
+        await message.answer(es.START_PRIVATE_OWNER)
     else:
+        # En grupos/canales: registrar el chat pero no mostrar nada de suscripción.
         await upsert_bot_chat(message.chat.id, message.chat.title, message.chat.type)
-        if await chat_is_allowed(message.chat.id):
-            await message.answer(es.START_GROUP)
-        else:
-            await message.answer(es.START_GROUP_NOT_LICENSED.format(owner=OWNER_USERNAME))
 
 
 # ============== /help ==============
@@ -154,53 +152,56 @@ async def cmd_start(message: Message) -> None:
 async def cmd_help(message: Message, bot: Bot) -> None:
     """Lista de todos los comandos disponibles."""
     is_priv = message.chat.type == ChatType.PRIVATE
+    is_owner_user = is_owner(message.from_user.id if message.from_user else None)
+
     owner_section = ""
-    if is_owner(message.from_user.id if message.from_user else None):
+    if is_owner_user:
         owner_section = (
-            "\n\n👑 <b>COMANDOS DE OWNER</b> (solo tú)\n"
-            "<code>/admin</code> — Panel de licencias y suscripciones\n"
-            "<code>/admin help</code> — Más comandos de admin"
+            "\n\n👑 <b>SOLO TÚ (dueño)</b>\n"
+            "<code>/config</code> — Configurar roles de grupos y staff\n"
+            "<code>/addstaff</code> — Añadir a alguien al staff\n"
+            "<code>/delstaff</code> — Quitar a alguien del staff\n"
+            "<code>/admin</code> — Panel de grupos (sistema de reglas)"
         )
+
     if is_priv:
         text = (
-            "📚 <b>COMANDOS DISPONIBLES</b>\n\n"
-            "🗂️ <b>EN PRIVADO CONMIGO</b>\n"
-            "<code>/menu</code> — Configurar uno de mis grupos\n"
-            "<code>/start</code> — Información del bot\n"
-            "<code>/help</code> — Esta ayuda\n\n"
-            "💡 <i>Para configurar un grupo, escribe /menu aquí. "
-            "Te listaré los grupos donde estoy y eres admin.</i>"
+            "📚 <b>COMANDOS</b>\n\n"
+            "⚙️ <code>/config</code> — Configurar roles y staff\n"
+            "📋 <code>/lista</code> — Personas sancionadas\n"
+            "🔎 <code>/buscar @/id</code> — Buscar a una persona\n"
+            "⏳ <code>/pendientes</code> — Reportes sin resolver\n"
             + owner_section
         )
     else:
         text = (
-            "📚 <b>COMANDOS DISPONIBLES EN ESTE GRUPO</b>\n\n"
-            "🛠️ <b>Configuración</b> (admins)\n"
-            "<code>/menu</code> — Menú completo de configuración\n"
-            "<code>/status</code> — Estado y estadísticas 24h\n"
-            "<code>/reload</code> — Recargar lista de admins\n"
-            "<code>/lock</code> / <code>/unlock</code> — Pausar/reanudar el bot\n"
-            "<code>/export</code> — Exportar config a JSON\n"
-            "<code>/import</code> — Importar config (responde a un .json)\n\n"
-            "👥 <b>Alianzas</b> (admins)\n"
-            "<code>/freespam @user</code> — Eximir a usuaria de las reglas\n"
-            "<code>/unfreespam @user</code> — Retirar exención\n"
-            "<code>/alianzas</code> — Lista de exentas\n\n"
-            "⚠️ <b>Advertencias</b> (admins)\n"
-            "<code>/warn @user motivo</code> — Advertir\n"
-            "<code>/unwarn @user</code> — Quitar último warn\n"
-            "<code>/warns @user</code> — Ver warns activos\n\n"
-            "🗑️ <b>Moderación de posts</b> (admins)\n"
-            "<code>/delete motivo</code> — Responde al post: lo borra, "
-            "avisa a la chica con el motivo y no cuenta como warn\n\n"
-            "⚡ <b>Atajos</b> (admins)\n"
-            "<code>/forcepost @user</code> — Pase libre próxima publicación\n"
-            "<code>/cancel</code> (reply o sin args) — Anular publicación (no cuenta)\n"
-            "<code>/logs</code> — Últimas 20 acciones del bot\n\n"
-            "✨ <b>Para todas</b>\n"
-            "<code>/myturn</code> — Cuándo me toca a mí publicar\n"
-            "<code>/whocanpost</code> — Quién puede publicar ahora\n"
-            "<code>/help</code> — Esta ayuda"
+            "📚 <b>COMANDOS EN ESTE GRUPO</b>\n\n"
+            "🛡️ <b>SANCIONES</b> (staff)\n"
+            "<code>/warnleve @/id motivo</code> — Warn leve (1 punto)\n"
+            "<code>/warngrave @/id motivo</code> — Warn grave (2 puntos)\n"
+            "<code>/ban @/id motivo</code> — Ban de toda la comunidad\n"
+            "<code>/mute7 @/id motivo</code> — Silenciar 7 días\n"
+            "<code>/mute @/id 3d motivo</code> — Silenciar (30m/12h/7d)\n"
+            "<code>/delete motivo</code> — Borrar post (responde) + avisar\n"
+            "<code>/unwarnleve</code> · <code>/unwarngrave</code> · "
+            "<code>/unban</code> · <code>/unmute</code> — Deshacer\n\n"
+            "🚨 <b>REPORTES Y LISTAS</b> (staff)\n"
+            "<code>/reporte @/id motivo</code> — Reportar (grupo verificadas)\n"
+            "<code>/lista</code> — Ver sancionados\n"
+            "<code>/buscar @/id</code> — Ficha de una persona\n"
+            "<code>/pendientes</code> — Reportes sin resolver\n\n"
+            "🛠️ <b>REGLAS DEL GRUPO</b> (admins)\n"
+            "<code>/menu</code> — Configuración completa\n"
+            "<code>/status</code> — Estado y estadísticas\n"
+            "<code>/lock</code> / <code>/unlock</code> — Pausar/reanudar\n"
+            "<code>/freespam @/id</code> — Eximir de las reglas\n"
+            "<code>/unfreespam @/id</code> — Quitar exención\n"
+            "<code>/alianzas</code> — Lista de exentas\n"
+            "<code>/forcepost @/id</code> — Pase libre próxima publicación\n"
+            "<code>/cancel</code> — Anular publicación (no cuenta)\n\n"
+            "✨ <b>PARA TODAS</b>\n"
+            "<code>/myturn</code> — Cuándo me toca publicar\n"
+            "<code>/whocanpost</code> — Quién puede publicar ahora"
             + owner_section
         )
     await message.reply(text)
@@ -676,82 +677,6 @@ async def cmd_whocanpost(message: Message, bot: Bot) -> None:
         lines.append("⏳ Ninguna de las recientes puede publicar todavía.")
     lines.append("")
     lines.append(f"🚫 En espera: <b>{len(cannot_post)}</b>")
-    await message.reply("\n".join(lines))
-
-
-# ============== /warn ==============
-@router.message(Command("warn"))
-async def cmd_warn(message: Message, bot: Bot) -> None:
-    if not await _check_admin_in_group(message, bot):
-        return
-    args = _command_args(message)
-    user_id, username, _full, error = await _resolve_target_user(bot, message, args)
-    if error:
-        await message.reply(error)
-        return
-    if not user_id:
-        await message.reply(es.ERR_USER_NOT_FOUND)
-        return
-    # Motivo
-    if message.reply_to_message:
-        reason = (args or "").strip() or "manual"
-    else:
-        parts = args.split(maxsplit=1) if args else []
-        reason = parts[1].strip() if len(parts) > 1 else "manual"
-    total = await manual_warn(bot, message.chat.id, user_id, username, reason)
-    cfg = await get_config(message.chat.id)
-    mention = safe_username(username, user_id)
-    await message.reply(
-        f"⚠️ Warn aplicado a {mention} ({total}/{cfg['warn_limit']})"
-    )
-
-
-# ============== /unwarn ==============
-@router.message(Command("unwarn"))
-async def cmd_unwarn(message: Message, bot: Bot) -> None:
-    if not await _check_admin_in_group(message, bot):
-        return
-    args = _command_args(message)
-    user_id, username, _full, error = await _resolve_target_user(bot, message, args)
-    if error:
-        await message.reply(error)
-        return
-    if not user_id:
-        await message.reply(es.ERR_USER_NOT_FOUND)
-        return
-    removed = await warns_db.remove_last_warn(message.chat.id, user_id)
-    mention = safe_username(username, user_id)
-    if removed:
-        await message.reply(f"✅ Warn quitado de {mention}.")
-    else:
-        await message.reply(f"ℹ️ {mention} no tenía warns activos.")
-
-
-# ============== /warns ==============
-@router.message(Command("warns"))
-async def cmd_warns(message: Message, bot: Bot) -> None:
-    if not _is_in_group(message):
-        await message.reply(es.ERR_NO_GROUP)
-        return
-    if not await chat_is_allowed(message.chat.id):
-        return
-    args = _command_args(message)
-    user_id, username, _full, error = await _resolve_target_user(bot, message, args)
-    if error:
-        await message.reply(error)
-        return
-    if not user_id:
-        await message.reply(es.ERR_USER_NOT_FOUND)
-        return
-    items = await warns_db.list_warns(message.chat.id, user_id)
-    mention = safe_username(username, user_id)
-    if not items:
-        await message.reply(f"✅ {mention} no tiene warns activos.")
-        return
-    cfg = await get_config(message.chat.id)
-    lines = [f"⚠️ <b>Warns de {mention}</b> ({len(items)}/{cfg['warn_limit']})", ""]
-    for w in items:
-        lines.append(f"• <code>{w['warned_at'][:16]}</code>: {w['reason']}")
     await message.reply("\n".join(lines))
 
 

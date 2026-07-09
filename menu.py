@@ -21,7 +21,7 @@ logger = logging.getLogger(__name__)
 router = Router(name="menu")
 
 
-@router.message(Command("menu", "settings", "config"))
+@router.message(Command("menu", "settings"))
 async def cmd_menu(message: Message, bot: Bot) -> None:
     """Abre el menú. En privado lista grupos; en grupo abre el menú directo."""
     if message.chat.type == ChatType.PRIVATE:

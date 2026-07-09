@@ -41,32 +41,48 @@ logger = logging.getLogger("bot")
 
 async def setup_commands(bot: Bot) -> None:
     """Configura los comandos visibles del bot en distintos contextos."""
+    # Comandos visibles para administradores en los grupos.
+    # Incluye moderación de las 3 reglas + comandos de sanción de la comunidad.
     admin_cmds = [
-        BotCommand(command="menu", description="🤖 Configurar el bot"),
+        # Sanciones de comunidad (staff)
+        BotCommand(command="warnleve", description="⚠️ Warn leve (1 punto)"),
+        BotCommand(command="warngrave", description="⛔ Warn grave (2 puntos)"),
+        BotCommand(command="ban", description="🚫 Banear de toda la comunidad"),
+        BotCommand(command="mute7", description="🔇 Silenciar 7 días"),
+        BotCommand(command="mute", description="🔇 Silenciar (ej: /mute @u 3d motivo)"),
+        BotCommand(command="delete", description="🗑️ Borrar post con motivo (responde)"),
+        BotCommand(command="unwarnleve", description="↩️ Quitar warn leve"),
+        BotCommand(command="unwarngrave", description="↩️ Quitar warn grave"),
+        BotCommand(command="unban", description="↩️ Quitar ban"),
+        BotCommand(command="unmute", description="↩️ Quitar silencio"),
+        # Reportes y consultas (staff)
+        BotCommand(command="reporte", description="🚨 Reportar (solo grupo verificadas)"),
+        BotCommand(command="lista", description="📋 Lista de sancionados"),
+        BotCommand(command="buscar", description="🔎 Buscar a una persona"),
+        BotCommand(command="pendientes", description="⏳ Reportes sin resolver"),
+        # Moderación de las 3 reglas
+        BotCommand(command="menu", description="🤖 Configurar el bot del grupo"),
         BotCommand(command="status", description="📊 Estado del grupo"),
-        BotCommand(command="help", description="📚 Lista de comandos"),
         BotCommand(command="lock", description="🔕 Pausar el bot"),
         BotCommand(command="unlock", description="✅ Reanudar el bot"),
-        BotCommand(command="freespam", description="👥 Añadir a alianzas (reply, @user o ID)"),
+        BotCommand(command="freespam", description="👥 Añadir a alianzas"),
         BotCommand(command="unfreespam", description="🚫 Quitar de alianzas"),
-        BotCommand(command="alianzas", description="📋 Ver lista de alianzas"),
+        BotCommand(command="alianzas", description="📋 Ver alianzas"),
         BotCommand(command="forcepost", description="⚡ Pase libre próxima publicación"),
-        BotCommand(command="delete", description="🗑️ Moderar post con motivo (responde al post)"),
         BotCommand(command="cancel", description="↩️ Anular publicación (no cuenta)"),
-        BotCommand(command="warn", description="⚠️ Advertir a una usuaria"),
-        BotCommand(command="unwarn", description="✅ Quitar advertencia"),
-        BotCommand(command="warns", description="📑 Ver advertencias"),
         BotCommand(command="whocanpost", description="✏️ Quién puede publicar ahora"),
         BotCommand(command="myturn", description="⏳ Cuándo me toca"),
-        BotCommand(command="logs", description="📜 Últimas acciones"),
-        BotCommand(command="reload", description="🔄 Recargar admins"),
-        BotCommand(command="export", description="💾 Exportar config"),
-        BotCommand(command="import", description="📥 Importar config"),
-    ]
-    private_cmds = [
-        BotCommand(command="menu", description="🤖 Configurar uno de mis grupos"),
-        BotCommand(command="start", description="ℹ️ Información del bot"),
         BotCommand(command="help", description="📚 Lista de comandos"),
+    ]
+    # Comandos en privado: SOLO para el owner (config del sistema).
+    # A los demás no les mostramos comandos privados.
+    private_cmds = [
+        BotCommand(command="config", description="⚙️ Configurar roles y staff"),
+        BotCommand(command="lista", description="📋 Ver sancionados"),
+        BotCommand(command="buscar", description="🔎 Buscar a una persona"),
+        BotCommand(command="pendientes", description="⏳ Reportes sin resolver"),
+        BotCommand(command="addstaff", description="👮 Añadir staff"),
+        BotCommand(command="help", description="📚 Todos los comandos"),
     ]
     await bot.set_my_commands(admin_cmds, scope=BotCommandScopeAllChatAdministrators())
     await bot.set_my_commands(private_cmds, scope=BotCommandScopeAllPrivateChats())

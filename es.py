@@ -1,24 +1,20 @@
 """Strings en español."""
 
-# === Inicio en privado ===
-START_PRIVATE = (
-    "🤖 <b>Bot de moderación multimedia premium</b>\n\n"
-    "Aplico hasta 3 reglas configurables sobre las publicaciones de fotos/vídeos "
-    "más filtros granulares por tipo de contenido (estilo GroupHelp):\n\n"
-    "🔄 <b>Cola rotatoria</b>\n"
-    "⏱️ <b>Cooldown</b>\n"
-    "🖼️ <b>Anti-duplicado</b>\n"
-    "🎯 <b>17 tipos de contenido filtrables</b>\n\n"
-    "<b>Cómo usarme:</b>\n"
-    "1️⃣ Añádeme a tu grupo.\n"
-    "2️⃣ Hazme administrador con permisos para "
-    "<b>eliminar mensajes</b>, <b>silenciar</b> y <b>banear</b>.\n"
-    "3️⃣ Activa tu suscripción contactando @{owner}.\n"
-    "4️⃣ Pulsa /menu para configurarme.\n\n"
-    "💎 <b>Suscripción</b>: 5 €/mes por grupo\n"
-    "💳 Pago vía Revolut a @{owner}\n\n"
-    "Escribe /help para ver todos los comandos."
+# === Inicio en privado (SOLO owner) ===
+START_PRIVATE_OWNER = (
+    "👑 <b>Panel de control — MALA MODERADOR</b>\n\n"
+    "Bienvenido de vuelta. Este bot gestiona la moderación y las sanciones "
+    "de toda la comunidad.\n\n"
+    "⚙️ <code>/config</code> — Configurar roles de grupos y staff\n"
+    "📋 <code>/lista</code> — Ver personas sancionadas\n"
+    "🔎 <code>/buscar</code> — Buscar a una persona\n"
+    "⏳ <code>/pendientes</code> — Reportes sin resolver\n"
+    "📚 <code>/help</code> — Todos los comandos\n\n"
+    "🛡️ Sistema de sanciones activo en toda la comunidad."
 )
+
+# (compatibilidad: algunos módulos viejos importan START_PRIVATE)
+START_PRIVATE = START_PRIVATE_OWNER
 
 # === Inicio en grupo ===
 START_GROUP = (
