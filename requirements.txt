@@ -1,4 +1,0 @@
-aiogram==3.13.1
-aiosqlite==0.20.0
-APScheduler==3.10.4
-tzdata==2024.2
