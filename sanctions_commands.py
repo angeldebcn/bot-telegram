@@ -64,6 +64,55 @@ def _split_args(message: Message) -> Optional[str]:
     return parts[1] if len(parts) > 1 else None
 
 
+def _reason_after_mention(message: Message, args: str) -> str:
+    """
+    Extrae la razón que va DESPUÉS de un nombre mencionado (text_mention).
+
+    El comando es del tipo: "/ban Antônio Silva ped asqueroso"
+    donde "Antônio Silva" es una mención clicable (una entity con offset y
+    length). Queremos quedarnos solo con "ped asqueroso".
+
+    Usamos el offset+length de la entity text_mention para saber en qué
+    posición del texto acaba el nombre, y cogemos lo que viene después.
+    """
+    raw = message.text or message.caption or ""
+    entities = message.entities or message.caption_entities or []
+    # Buscar la text_mention
+    for ent in entities:
+        if getattr(ent, "type", None) == "text_mention" and getattr(ent, "user", None):
+            end = ent.offset + ent.length
+            # Todo lo que va tras el final del nombre mencionado
+            after = raw[end:].strip()
+            if after:
+                return after
+    # Fallback: si no pudimos calcular, intentar quitar el primer token de args
+    parts = args.strip().split(maxsplit=1)
+    return parts[1].strip() if len(parts) > 1 else ""
+
+
+def _extract_mentioned_user(message: Message):
+    """
+    Extrae un usuario mencionado en el mensaje mediante las 'entities' de
+    Telegram. Cubre dos casos:
+
+    1. text_mention: cuando mencionas a alguien SIN @usuario tocando su nombre
+       en la lista. Telegram inserta el nombre como enlace azul y guarda el
+       objeto User (con su id) en la entity. Es lo que hace falta para banear
+       a gente sin @username. ¡Este es el caso de la captura!
+
+    2. mention: cuando escribes @usuario. Aquí Telegram NO da el id, solo el
+       texto "@usuario"; ese caso se resuelve luego por username.
+
+    Devuelve el objeto User (de la text_mention) o None.
+    """
+    entities = message.entities or message.caption_entities or []
+    for ent in entities:
+        # text_mention lleva el objeto user con su id dentro
+        if getattr(ent, "type", None) == "text_mention" and getattr(ent, "user", None):
+            return ent.user
+    return None
+
+
 async def _resolve_target_global(
     bot: Bot, message: Message, args: Optional[str],
 ) -> tuple[Optional[int], Optional[str], Optional[str], Optional[str], Optional[str]]:
@@ -71,9 +120,12 @@ async def _resolve_target_global(
     Resuelve a quién va dirigida la sanción, de forma GLOBAL.
     Devuelve (user_id, username, full_name, reason, error).
 
-    - Reply: saca el usuario del mensaje respondido; la razón es `args` entero.
-    - @username: busca primero global (todos los grupos), la razón es el resto.
-    - id numérico: intenta resolver; la razón es el resto.
+    Orden de resolución:
+    - Reply: saca el usuario del mensaje respondido.
+    - Mención por nombre (text_mention): cuando tocas el nombre en la lista y
+      sale en azul sin @. Trae el id directamente.
+    - @username: busca global (todos los grupos).
+    - id numérico.
     """
     # 1. Reply -> el target es el autor del mensaje respondido
     if message.reply_to_message and message.reply_to_message.from_user:
@@ -82,10 +134,24 @@ async def _resolve_target_global(
         reason = args.strip() if args else ""
         return u.id, u.username, u.full_name, reason, None
 
+    # 2. Mención por nombre clicable (text_mention) -> trae el id directo
+    mentioned = _extract_mentioned_user(message)
+    if mentioned is not None:
+        await cache_user(message.chat.id, mentioned.id, mentioned.username, mentioned.full_name)
+        # La razón es todo lo que va después del nombre mencionado.
+        # El nombre mencionado ocupa parte del texto; para sacar la razón,
+        # quitamos la primera "palabra-token" de args igual que con @usuario.
+        reason = ""
+        if args:
+            # Si el arg empieza por @, quitar ese token; si no, el nombre puede
+            # tener varias palabras, así que usamos la longitud de la entity.
+            reason = _reason_after_mention(message, args)
+        return mentioned.id, mentioned.username, mentioned.full_name, reason, None
+
     if not args:
         return None, None, None, None, (
-            "❌ Responde al mensaje de la persona, o escribe el comando seguido "
-            "de @usuario o su ID y luego la razón.\n\n"
+            "❌ Responde al mensaje de la persona, menciónalo tocando su nombre, "
+            "o escribe el comando seguido de @usuario o su ID y luego la razón.\n\n"
             "Ejemplo: <code>/warngrave @fulanito insultó a una modelo</code>"
         )
 
@@ -93,7 +159,7 @@ async def _resolve_target_global(
     target_token = tokens[0]
     reason = tokens[1] if len(tokens) > 1 else ""
 
-    # 2. @username
+    # 3. @username
     if target_token.startswith("@"):
         # Buscar global (todos los grupos)
         found = await sanctions_db.resolve_username_global(target_token)
@@ -107,11 +173,11 @@ async def _resolve_target_global(
             "Telegram no me deja buscar a alguien solo por @ si nunca lo he visto. "
             "Soluciones:\n"
             "• Responde a un mensaje suyo con el comando.\n"
-            "• O usa su ID numérico (lo da @userinfobot).\n"
-            "• O pídele que escriba algo en algún grupo y reintenta."
+            "• O toca su nombre para mencionarlo (sale en azul).\n"
+            "• O usa su ID numérico (lo da @userinfobot)."
         )
 
-    # 3. ID numérico
+    # 4. ID numérico
     if target_token.lstrip("-").isdigit():
         uid = int(target_token)
         # Intentar enriquecer con datos si lo conocemos
