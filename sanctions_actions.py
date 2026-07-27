@@ -178,12 +178,27 @@ def build_sanction_notice(
 
 
 async def _post_notice_in_chat(
-    bot: Bot, chat_id: int, text: str,
+    bot: Bot, chat_id: int, text: str, thread_id: Optional[int] = None,
 ) -> None:
+    """
+    Publica un aviso en un chat. Si se pasa thread_id (hilo de un foro),
+    lo publica en ese hilo. Si falla por el hilo, reintenta sin él para no
+    perder el aviso. En grupos normales, thread_id es None y todo va normal.
+    """
+    kwargs = {"disable_web_page_preview": True}
+    if thread_id is not None:
+        kwargs["message_thread_id"] = thread_id
     try:
-        await bot.send_message(chat_id, text, disable_web_page_preview=True)
+        await bot.send_message(chat_id, text, **kwargs)
     except (TelegramBadRequest, TelegramForbiddenError) as e:
-        logger.debug("No se pudo publicar aviso en %s: %s", chat_id, e)
+        if thread_id is not None:
+            # Reintentar sin hilo (ej. tema cerrado o borrado)
+            try:
+                await bot.send_message(chat_id, text, disable_web_page_preview=True)
+            except (TelegramBadRequest, TelegramForbiddenError):
+                pass
+        else:
+            logger.debug("No se pudo publicar aviso en %s: %s", chat_id, e)
 
 
 async def _post_notice_everywhere(
@@ -217,6 +232,7 @@ async def apply_warn_action(
     issued_by: Optional[int],
     issued_in_chat: int,
     notice_scope: str,         # "here" (solo issued_in_chat) o "everywhere"
+    thread_id: Optional[int] = None,  # hilo del foro (para aviso "here")
 ) -> dict:
     """
     Aplica un warn completo: registra, cruza umbrales (mute/ban), y publica
@@ -267,7 +283,7 @@ async def apply_warn_action(
     if notice_scope == "everywhere":
         await _post_notice_everywhere(bot, user_id, notice)
     else:
-        await _post_notice_in_chat(bot, issued_in_chat, notice)
+        await _post_notice_in_chat(bot, issued_in_chat, notice, thread_id)
 
     return {
         "kind": kind,
@@ -287,6 +303,7 @@ async def apply_ban_action(
     issued_by: Optional[int],
     issued_in_chat: int,
     notice_scope: str,
+    thread_id: Optional[int] = None,
 ) -> dict:
     """Ban directo en todos los grupos + aviso."""
     reason_short = clean_reason_short(reason_full)
@@ -304,7 +321,7 @@ async def apply_ban_action(
     if notice_scope == "everywhere":
         await _post_notice_everywhere(bot, user_id, notice)
     else:
-        await _post_notice_in_chat(bot, issued_in_chat, notice)
+        await _post_notice_in_chat(bot, issued_in_chat, notice, thread_id)
 
     return {"banned": True}
 
@@ -319,6 +336,7 @@ async def apply_mute_action(
     issued_in_chat: int,
     seconds: int,
     notice_scope: str,
+    thread_id: Optional[int] = None,
 ) -> dict:
     """Mute manual por X segundos en todos los grupos + aviso."""
     reason_short = clean_reason_short(reason_full)
@@ -347,7 +365,7 @@ async def apply_mute_action(
     if notice_scope == "everywhere":
         await _post_notice_everywhere(bot, user_id, notice)
     else:
-        await _post_notice_in_chat(bot, issued_in_chat, notice)
+        await _post_notice_in_chat(bot, issued_in_chat, notice, thread_id)
 
     return {"muted": True, "seconds": seconds}
 

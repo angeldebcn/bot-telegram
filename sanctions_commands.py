@@ -46,6 +46,19 @@ router = Router(name="sanctions_commands")
 # ===========================================================================
 # HELPERS
 # ===========================================================================
+def _thread_of(message: Message) -> Optional[int]:
+    """
+    Devuelve el hilo del foro donde se lanzó el comando, SOLO si el mensaje
+    pertenece a un tema de un foro. En grupos normales devuelve None, para no
+    romper nada. Así el aviso de la sanción sale en el mismo hilo.
+    """
+    thread_id = getattr(message, "message_thread_id", None)
+    is_topic = getattr(message, "is_topic_message", False)
+    if thread_id is not None and is_topic:
+        return thread_id
+    return None
+
+
 def _is_in_group(message: Message) -> bool:
     return message.chat.type in (ChatType.GROUP, ChatType.SUPERGROUP)
 
@@ -284,7 +297,7 @@ async def _handle_warn(message: Message, bot: Bot, kind: str) -> None:
     await sanctions_actions.apply_warn_action(
         bot, uid, username, full_name, kind, reason.strip(),
         issued_by=message.from_user.id, issued_in_chat=message.chat.id,
-        notice_scope="here",
+        notice_scope="here", thread_id=_thread_of(message),
     )
 
 
@@ -326,7 +339,7 @@ async def cmd_ban(message: Message, bot: Bot) -> None:
     await sanctions_actions.apply_ban_action(
         bot, uid, username, full_name, reason,
         issued_by=message.from_user.id, issued_in_chat=message.chat.id,
-        notice_scope="here",
+        notice_scope="here", thread_id=_thread_of(message),
     )
 
 
@@ -356,7 +369,7 @@ async def cmd_mute7(message: Message, bot: Bot) -> None:
     await sanctions_actions.apply_mute_action(
         bot, uid, username, full_name, reason,
         issued_by=message.from_user.id, issued_in_chat=message.chat.id,
-        seconds=7 * 86400, notice_scope="here",
+        seconds=7 * 86400, notice_scope="here", thread_id=_thread_of(message),
     )
 
 
@@ -422,7 +435,7 @@ async def cmd_mute(message: Message, bot: Bot) -> None:
     await sanctions_actions.apply_mute_action(
         bot, uid, username, full_name, reason,
         issued_by=message.from_user.id, issued_in_chat=message.chat.id,
-        seconds=seconds, notice_scope="here",
+        seconds=seconds, notice_scope="here", thread_id=_thread_of(message),
     )
 
 

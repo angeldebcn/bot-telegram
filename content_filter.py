@@ -177,7 +177,13 @@ def _mention_html(user) -> str:
 
 
 async def _delete_and_warn(message: Message, bot: Bot, template: str) -> None:
-    """Borra el mensaje infractor y publica un aviso etiquetando a la persona."""
+    """
+    Borra el mensaje infractor y publica un aviso etiquetando a la persona.
+
+    En foros (grupos con temas/hilos), el aviso se publica EN EL MISMO HILO
+    donde se borró el mensaje, no en #General. Así la persona lo ve donde
+    estaba publicando, aunque tenga #General oculto.
+    """
     # Borrar el mensaje (o todos los del álbum si es media group)
     try:
         await bot.delete_message(message.chat.id, message.message_id)
@@ -186,9 +192,27 @@ async def _delete_and_warn(message: Message, bot: Bot, template: str) -> None:
 
     mention = _mention_html(message.from_user)
     text = template.format(mention=mention)
+
+    # Detectar el hilo del foro donde estaba el mensaje (si es un foro)
+    thread_id = getattr(message, "message_thread_id", None)
+    # Solo pasar thread_id si el mensaje realmente venía de un tema del foro.
+    # (is_topic_message evita mandar a #General por error en grupos normales)
+    is_topic = getattr(message, "is_topic_message", False)
+
+    kwargs = {"disable_web_page_preview": True}
+    if thread_id is not None and is_topic:
+        kwargs["message_thread_id"] = thread_id
+
     try:
-        await bot.send_message(
-            message.chat.id, text, disable_web_page_preview=True,
-        )
+        await bot.send_message(message.chat.id, text, **kwargs)
     except (TelegramBadRequest, TelegramForbiddenError) as e:
-        logger.debug("No se pudo avisar del filtro en %s: %s", message.chat.id, e)
+        # Si falla por el hilo (ej. tema cerrado), reintentar sin hilo
+        if "message_thread_id" in kwargs:
+            try:
+                await bot.send_message(
+                    message.chat.id, text, disable_web_page_preview=True,
+                )
+            except (TelegramBadRequest, TelegramForbiddenError):
+                pass
+        else:
+            logger.debug("No se pudo avisar del filtro en %s: %s", message.chat.id, e)
