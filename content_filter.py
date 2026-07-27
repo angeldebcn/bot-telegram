@@ -118,11 +118,16 @@ async def check_message(message: Message, bot: Bot) -> bool:
         if _is_visible_forward(message):
             await _delete_and_warn(
                 message, bot,
-                "🔁 {mention}, no se permiten mensajes <b>reenviados</b> que muestren "
-                "de dónde vienen.\n\n"
-                "Si quieres compartir algo, reenvíalo <b>ocultando el remitente</b> "
-                "(en los ajustes de reenvío) para que no aparezca el origen. "
-                "Tu publicación no cuenta, puedes volver a subir.",
+                "🔁 {mention}, no se permiten <b>reenviados</b> que muestren de dónde vienen.\n\n"
+                "Tu publicación no cuenta, puedes volver a subir. Para compartir sin que "
+                "aparezca «Reenviado», tienes 3 opciones:\n\n"
+                "1️⃣ <b>Mensajes guardados</b>: busca ese chat en la lupa 🔍 de Telegram, "
+                "guarda ahí tu contenido y reenvíalo desde ahí a uno o varios grupos "
+                "(no aparece el origen). Incluso puedes programarlo.\n\n"
+                "2️⃣ <b>Programar mensajes</b> directamente en el chat del grupo.\n\n"
+                "3️⃣ <b>Graph Messenger</b> (app asociada a Telegram): reenvía el mismo "
+                "mensaje a varios grupos sin que salga «Reenviado», desactivando la "
+                "opción de <b>«Citar»</b>.",
             )
             return True
 

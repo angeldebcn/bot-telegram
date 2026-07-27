@@ -317,6 +317,9 @@ def advanced_menu(cfg: dict) -> InlineKeyboardMarkup:
     autoclean_label = "Nunca" if autoclean_days == 0 else f"{autoclean_days} días"
     del_notice = int(cfg.get("delete_notice_seconds", 60))
     del_notice_label = "Permanente" if del_notice == 0 else _fmt_secs(del_notice)
+    # Aviso de las 3 reglas (usamos notice_queue_seconds como referencia común)
+    rule_notice = int(cfg.get("notice_queue_seconds", 15))
+    rule_notice_label = "Permanente" if rule_notice == 0 else _fmt_secs(rule_notice)
     return InlineKeyboardMarkup(inline_keyboard=[
         [_btn(
             f"🔒 Solo admins en menú: {'✅' if cfg['admin_only_menu'] else '❌'}",
@@ -331,6 +334,7 @@ def advanced_menu(cfg: dict) -> InlineKeyboardMarkup:
             f"advt:{chat_id}:delete_service_messages",
         )],
         [_btn(f"🗑️ Aviso de /delete: {del_notice_label}", f"dnotice:{chat_id}")],
+        [_btn(f"📢 Aviso de las reglas: {rule_notice_label}", f"rnotice:{chat_id}")],
         [_btn(f"🗂️ Auto-limpieza: {autoclean_label}", f"advac:{chat_id}")],
         [_btn("🔄 Resetear cola actual", f"rstq:{chat_id}")],
         [_btn("⚠️ Restaurar valores por defecto", f"reset:{chat_id}")],
@@ -353,6 +357,23 @@ def delete_notice_menu(chat_id: int, current: int) -> InlineKeyboardMarkup:
     for v in DELETE_NOTICE_OPTIONS:
         label = "♾️ Permanente" if v == 0 else _fmt_secs(v)
         btns.append(_btn(f"{label}{_check(v == current)}", f"dnoticeset:{chat_id}:{v}"))
+    return InlineKeyboardMarkup(inline_keyboard=[
+        *_rows(btns, per_row=3),
+        [_btn("🔙 Volver", f"adv:{chat_id}")],
+    ])
+
+
+def rule_notice_menu(chat_id: int, current: int) -> InlineKeyboardMarkup:
+    """
+    Submenú para elegir cuánto duran los avisos de las 3 reglas
+    (cuando alguien no puede publicar por la cola/cooldown/antidup).
+    0 = permanente (el aviso nunca se borra).
+    """
+    from config import DELETE_NOTICE_OPTIONS
+    btns = []
+    for v in DELETE_NOTICE_OPTIONS:
+        label = "♾️ Permanente" if v == 0 else _fmt_secs(v)
+        btns.append(_btn(f"{label}{_check(v == current)}", f"rnoticeset:{chat_id}:{v}"))
     return InlineKeyboardMarkup(inline_keyboard=[
         *_rows(btns, per_row=3),
         [_btn("🔙 Volver", f"adv:{chat_id}")],

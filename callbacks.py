@@ -61,6 +61,7 @@ from builders import (
     confirm_reset_queue,
     cooldown_menu,
     delete_notice_menu,
+    rule_notice_menu,
     filter_action_menu,
     filter_main_menu,
     help_menu_keyboard,
@@ -731,6 +732,49 @@ async def cb_delete_notice_set(cb: CallbackQuery, bot: Bot) -> None:
     await _safe_edit(
         cb, "🗑️ <b>Duración del aviso de /delete</b>",
         delete_notice_menu(chat_id, value),
+    )
+    await cb.answer(f"✅ {label}")
+
+
+@router.callback_query(F.data.startswith("rnotice:"))
+async def cb_rule_notice(cb: CallbackQuery, bot: Bot) -> None:
+    chat_id = int(cb.data.split(":")[1])
+    if not await _check_admin_or_deny(cb, bot, chat_id):
+        return
+    cfg = await get_config(chat_id)
+    text = (
+        "📢 <b>Duración de los avisos de las reglas</b>\n\n"
+        "Cuando alguien intenta publicar pero no puede (porque le toca esperar "
+        "su turno en la cola, el cooldown, o por publicación repetida), el bot "
+        "avisa de por qué no se ha publicado.\n\n"
+        "Aquí eliges cuánto dura ese aviso antes de borrarse.\n\n"
+        "<i>♾️ Permanente = el aviso se queda fijo y nunca se borra.</i>"
+    )
+    await _safe_edit(
+        cb, text, rule_notice_menu(chat_id, int(cfg.get("notice_queue_seconds", 15))),
+    )
+    await cb.answer()
+
+
+@router.callback_query(F.data.startswith("rnoticeset:"))
+async def cb_rule_notice_set(cb: CallbackQuery, bot: Bot) -> None:
+    parts = cb.data.split(":")
+    chat_id, value = int(parts[1]), int(parts[2])
+    if not await _check_admin_or_deny(cb, bot, chat_id):
+        return
+    # Un solo ajuste controla los avisos de las 3 reglas a la vez
+    await update_config(chat_id, "notice_queue_seconds", value)
+    await update_config(chat_id, "notice_cooldown_seconds", value)
+    await update_config(chat_id, "notice_antidup_seconds", value)
+    if value == 0:
+        label = "Permanente"
+    elif value < 60:
+        label = f"{value}s"
+    else:
+        label = f"{value // 60} min"
+    await _safe_edit(
+        cb, "📢 <b>Duración de los avisos de las reglas</b>",
+        rule_notice_menu(chat_id, value),
     )
     await cb.answer(f"✅ {label}")
 
