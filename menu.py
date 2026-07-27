@@ -48,19 +48,33 @@ async def _menu_group(message: Message, bot: Bot) -> None:
 
 
 async def _menu_private(message: Message, bot: Bot) -> None:
+    from license_helpers import is_owner
     chats = await list_bot_chats()
     if not chats:
         await message.reply(es.NO_GROUPS_PRIVATE.format(owner=OWNER_USERNAME))
         return
-    # Filtrar a los grupos donde el usuario es admin
-    user_id = message.from_user.id
+
+    user_id = message.from_user.id if message.from_user else None
+    owner = is_owner(user_id)
+
     accessible = []
     for chat in chats:
+        # Solo grupos/supergrupos (no canales) tienen menú de reglas
+        if chat.get("chat_type") not in ("group", "supergroup"):
+            continue
+        # El owner ve TODOS los grupos sin depender del chequeo de admin
+        # (que puede fallar si el bot no puede consultar a ese grupo ahora).
+        if owner:
+            accessible.append(chat)
+            continue
+        # Para no-owner: comprobar admin, pero capturando CUALQUIER error
+        # (antes solo capturaba TelegramBadRequest y el resto tumbaba el menú).
         try:
             if await is_admin(bot, chat["chat_id"], user_id):
                 accessible.append(chat)
-        except TelegramBadRequest:
+        except Exception:
             continue
+
     if not accessible:
         await message.reply(es.NOT_ADMIN_ANYWHERE.format(owner=OWNER_USERNAME))
         return
