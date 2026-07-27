@@ -24,7 +24,7 @@ except ValueError:
 
 OWNER_USERNAME = os.getenv("OWNER_USERNAME", "lapanteraoficial").strip().lstrip("@")
 SUBSCRIPTION_PRICE_EUR = float(os.getenv("SUBSCRIPTION_PRICE_EUR", "5"))
-LICENSING_ENABLED = os.getenv("LICENSING_ENABLED", "true").lower() not in ("false", "0", "no")
+LICENSING_ENABLED = os.getenv("LICENSING_ENABLED", "false").lower() not in ("false", "0", "no")
 
 # === LOGGING ===
 LOG_LEVEL_STR = os.getenv("LOG_LEVEL", "INFO").upper()
