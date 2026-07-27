@@ -70,6 +70,7 @@ def _short_title(title: Optional[str], chat_id: int) -> str:
 def _main_config_menu() -> InlineKeyboardMarkup:
     return InlineKeyboardMarkup(inline_keyboard=[
         [InlineKeyboardButton(text="🏷️ Roles de grupos", callback_data="cfg:groups")],
+        [InlineKeyboardButton(text="🚫 Palabras prohibidas", callback_data="cfg:words")],
         [InlineKeyboardButton(text="👮 Gestionar staff", callback_data="cfg:staff")],
         [InlineKeyboardButton(text="❌ Cerrar", callback_data="cfg:close")],
     ])
@@ -223,6 +224,8 @@ async def _group_detail_menu(chat_id: int) -> tuple[str, InlineKeyboardMarkup]:
     is_verified = bool(roles.get("is_verified_group"))
     is_staff = bool(roles.get("is_staff_group"))
     applies_rules = bool(roles.get("applies_rules"))
+    filter_words = bool(roles.get("filter_words"))
+    block_forwards = bool(roles.get("block_forwards"))
 
     text = (
         f"🏷️ <b>{title}</b>\n"
@@ -235,7 +238,11 @@ async def _group_detail_menu(chat_id: int) -> tuple[str, InlineKeyboardMarkup]:
         f"{_check(applies_rules)} <b>Aplican las 3 reglas</b>\n"
         "   Cola / cooldown / anti-duplicado\n\n"
         f"{_check(applies_sanctions)} <b>Se ejecutan sanciones</b>\n"
-        "   Aquí se aplican mutes y bans"
+        "   Aquí se aplican mutes y bans\n\n"
+        f"{_check(filter_words)} <b>Filtrar palabras prohibidas</b>\n"
+        "   Borra mensajes con palabras de la lista\n\n"
+        f"{_check(block_forwards)} <b>Bloquear reenviados</b>\n"
+        "   Borra reenvíos que muestran el origen"
     )
 
     kb = InlineKeyboardMarkup(inline_keyboard=[
@@ -254,6 +261,14 @@ async def _group_detail_menu(chat_id: int) -> tuple[str, InlineKeyboardMarkup]:
         [InlineKeyboardButton(
             text=f"{_check(applies_sanctions)} Se ejecutan sanciones",
             callback_data=f"cfg:flag:{chat_id}:applies_sanctions",
+        )],
+        [InlineKeyboardButton(
+            text=f"{_check(filter_words)} Filtrar palabras",
+            callback_data=f"cfg:flag:{chat_id}:filter_words",
+        )],
+        [InlineKeyboardButton(
+            text=f"{_check(block_forwards)} Bloquear reenviados",
+            callback_data=f"cfg:flag:{chat_id}:block_forwards",
         )],
         [InlineKeyboardButton(text="🔙 Volver a grupos", callback_data="cfg:groups")],
     ])
@@ -312,6 +327,8 @@ async def cb_config_toggle_flag(cb: CallbackQuery, bot: Bot) -> None:
         "is_staff_group": "Grupo de staff",
         "applies_rules": "Aplican las 3 reglas",
         "applies_sanctions": "Se ejecutan sanciones",
+        "filter_words": "Filtrar palabras",
+        "block_forwards": "Bloquear reenviados",
     }
     estado = "activado" if new_value else "desactivado"
     await cb.answer(f"{nombres.get(flag, flag)}: {estado}")
@@ -490,3 +507,90 @@ async def cmd_delstaff(message: Message, bot: Bot) -> None:
         await message.reply("✅ Quitado del staff.")
     else:
         await message.reply("ℹ️ Esa persona no estaba en el staff.")
+
+
+# ===========================================================================
+# SECCIÓN: PALABRAS PROHIBIDAS
+# ===========================================================================
+async def _words_menu() -> tuple[str, InlineKeyboardMarkup]:
+    import sanctions_db
+    words = await sanctions_db.get_banned_words()
+    n = len(words)
+
+    # Mostrar las palabras (si son muchas, recortar para no pasar el límite)
+    if words:
+        lista = ", ".join(words)
+        if len(lista) > 3000:
+            lista = lista[:3000] + "… (y más)"
+        cuerpo = f"<b>{n} palabras/combinaciones:</b>\n\n<code>{lista}</code>"
+    else:
+        cuerpo = "No hay ninguna palabra en la lista."
+
+    text = (
+        "🚫 <b>PALABRAS PROHIBIDAS</b>\n\n"
+        f"{cuerpo}\n\n"
+        "Para <b>añadir</b>: <code>/addpalabra palabra</code>\n"
+        "  (o una combinación: <code>/addpalabra video hot</code>)\n"
+        "Para <b>quitar</b>: <code>/delpalabra palabra</code>\n\n"
+        "ℹ️ Recuerda activar «Filtrar palabras» en cada grupo donde quieras "
+        "que se aplique (en «Roles de grupos»)."
+    )
+    kb = InlineKeyboardMarkup(inline_keyboard=[
+        [InlineKeyboardButton(text="🔄 Actualizar", callback_data="cfg:words")],
+        [InlineKeyboardButton(text="🔙 Volver", callback_data="cfg:main")],
+    ])
+    return text, kb
+
+
+@router.callback_query(F.data == "cfg:words")
+async def cb_config_words(cb: CallbackQuery, bot: Bot) -> None:
+    if not _is_owner(cb.from_user.id):
+        await cb.answer()
+        return
+    text, kb = await _words_menu()
+    try:
+        await cb.message.edit_text(text, reply_markup=kb, disable_web_page_preview=True)
+    except TelegramBadRequest:
+        pass
+    await cb.answer()
+
+
+@router.message(Command("addpalabra", "addword", "agregarpalabra"))
+async def cmd_addpalabra(message: Message, bot: Bot) -> None:
+    if not message.from_user or not _is_owner(message.from_user.id):
+        return
+    import sanctions_db
+    import content_filter
+    parts = (message.text or "").split(maxsplit=1)
+    if len(parts) < 2 or not parts[1].strip():
+        await message.reply(
+            "❌ Uso: <code>/addpalabra palabra</code>\n"
+            "O una combinación: <code>/addpalabra video llamada hot</code>"
+        )
+        return
+    palabra = parts[1].strip().lower()
+    added = await sanctions_db.add_banned_word(palabra, message.from_user.id)
+    content_filter.invalidate_words_cache()
+    if added:
+        await message.reply(f"✅ Añadida a la lista de palabras prohibidas: <code>{palabra}</code>")
+    else:
+        await message.reply(f"ℹ️ <code>{palabra}</code> ya estaba en la lista.")
+
+
+@router.message(Command("delpalabra", "delword", "quitarpalabra"))
+async def cmd_delpalabra(message: Message, bot: Bot) -> None:
+    if not message.from_user or not _is_owner(message.from_user.id):
+        return
+    import sanctions_db
+    import content_filter
+    parts = (message.text or "").split(maxsplit=1)
+    if len(parts) < 2 or not parts[1].strip():
+        await message.reply("❌ Uso: <code>/delpalabra palabra</code>")
+        return
+    palabra = parts[1].strip().lower()
+    removed = await sanctions_db.remove_banned_word(palabra)
+    content_filter.invalidate_words_cache()
+    if removed:
+        await message.reply(f"✅ Quitada de la lista: <code>{palabra}</code>")
+    else:
+        await message.reply(f"ℹ️ <code>{palabra}</code> no estaba en la lista.")

@@ -91,6 +91,10 @@ async def setup_commands(bot: Bot) -> None:
 async def main() -> None:
     await init_db()
     await init_sanctions_db()
+    from sanctions_db import seed_default_banned_words
+    n = await seed_default_banned_words()
+    if n:
+        logging.getLogger(__name__).info("✅ %d palabras prohibidas cargadas por defecto", n)
 
     bot = Bot(
         token=BOT_TOKEN,

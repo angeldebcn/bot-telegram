@@ -104,6 +104,15 @@ async def handle_group_message(message: Message, bot: Bot) -> None:
     if int(cfg.get("locked", 0)):
         return
 
+    # 2a. FILTRO DE CONTENIDO (palabras prohibidas / reenviados).
+    # Se comprueba ANTES de las 3 reglas y afecta a TODOS (incluidos admins),
+    # porque una palabra prohibida o un reenviado lo es para cualquiera.
+    # Si el mensaje se borra por un filtro, no seguimos procesándolo y NO
+    # cuenta como publicación (no gasta turno de la cola).
+    import content_filter
+    if await content_filter.check_message(message, bot):
+        return
+
     # 2b. Roles de grupo: si este grupo NO aplica las 3 reglas
     # (ej. grupo de verificadas o de staff), no moderar aquí.
     import roles_db

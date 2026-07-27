@@ -134,7 +134,15 @@ CREATE TABLE IF NOT EXISTS group_roles (
     is_staff_group     INTEGER NOT NULL DEFAULT 0,
     applies_rules      INTEGER NOT NULL DEFAULT 1,
     applies_sanctions  INTEGER NOT NULL DEFAULT 1,
+    filter_words       INTEGER NOT NULL DEFAULT 0,
+    block_forwards     INTEGER NOT NULL DEFAULT 0,
     updated_at         TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+);
+
+CREATE TABLE IF NOT EXISTS banned_words (
+    word        TEXT PRIMARY KEY,
+    added_by    INTEGER,
+    created_at  TIMESTAMP DEFAULT CURRENT_TIMESTAMP
 );
 
 CREATE TABLE IF NOT EXISTS staff (
@@ -160,9 +168,27 @@ async def init_sanctions_db() -> None:
         try:
             await db.executescript(SANCTIONS_SCHEMA)
             await db.commit()
+            # Migración: añadir columnas nuevas a group_roles si faltan
+            # (para bases de datos creadas antes de estas features).
+            await _migrate_group_roles(db)
             logger.info("✅ Tablas del sistema de sanciones inicializadas")
         except aiosqlite.Error as e:
             logger.warning("Error creando tablas de sanciones: %s", e)
+
+
+async def _migrate_group_roles(db) -> None:
+    """Añade columnas nuevas a group_roles si no existen (upgrade seguro)."""
+    cur = await db.execute("PRAGMA table_info(group_roles)")
+    cols = {row["name"] for row in await cur.fetchall()}
+    if "filter_words" not in cols:
+        await db.execute(
+            "ALTER TABLE group_roles ADD COLUMN filter_words INTEGER NOT NULL DEFAULT 0"
+        )
+    if "block_forwards" not in cols:
+        await db.execute(
+            "ALTER TABLE group_roles ADD COLUMN block_forwards INTEGER NOT NULL DEFAULT 0"
+        )
+    await db.commit()
 
 
 # ===========================================================================
@@ -715,3 +741,83 @@ async def get_all_active_sanctioned() -> dict:
         result[category].append(ficha)
 
     return result
+
+
+# ===========================================================================
+# PALABRAS PROHIBIDAS (filtro de contenido)
+# ===========================================================================
+# Lista por defecto. Se cargan la primera vez si la tabla está vacía.
+DEFAULT_BANNED_WORDS = [
+    # Actos
+    "follar", "follada", "folla", "follando", "follamos", "mamada", "mamadas",
+    "mamar", "felación", "cunnilingus", "corrida", "corridas", "correrse",
+    "eyacular", "eyaculación", "masturbación", "masturbarse", "masturbar",
+    "paja", "pajas", "pajearse", "penetración", "penetrar", "penetrada",
+    "empotrar", "empotrada", "culear", "culiar", "singar", "garchar",
+    "fisting", "squirt", "squirting", "orgasmo", "orgía", "orgia", "gangbang",
+    "bukkake",
+    # Partes
+    "coño", "coños", "chocho", "chichi", "polla", "pollas", "verga", "vergazo",
+    "cipote", "picha", "nabo", "minga", "clítoris", "clito", "vulva", "vagina",
+    "panocha", "garcha", "tetas", "teta", "tetazas", "pezón", "pezones",
+    "culo", "culito", "ojete", "ano",
+    # Categoría
+    "porno", "pornográfico", "pornografía", "porn", "xxx", "hardcore", "nudes",
+    "nude", "fullnude", "desnuda", "desnudo", "desnudos", "desnudez", "topless",
+    "striptease", "sexting", "sexcam", "camgirl", "cachonda", "morbosa",
+    # Otros
+    "anal", "oral", "dildo", "consolador", "vibrador", "strapon", "creampie",
+    "cumshot", "cum", "deepthroat", "blowjob", "handjob", "milf", "hentai",
+    "semen", "esperma", "lefa",
+]
+
+
+async def seed_default_banned_words() -> int:
+    """Carga la lista por defecto SOLO si la tabla está vacía. Devuelve cuántas cargó."""
+    async with get_db() as db:
+        cur = await db.execute("SELECT COUNT(*) AS n FROM banned_words")
+        row = await cur.fetchone()
+        if int(row["n"] or 0) > 0:
+            return 0  # ya hay palabras, no tocar
+        for w in DEFAULT_BANNED_WORDS:
+            await db.execute(
+                "INSERT OR IGNORE INTO banned_words (word) VALUES (?)",
+                (w.lower().strip(),),
+            )
+        await db.commit()
+        return len(DEFAULT_BANNED_WORDS)
+
+
+async def get_banned_words() -> list[str]:
+    async with get_db() as db:
+        cur = await db.execute("SELECT word FROM banned_words ORDER BY word")
+        return [r["word"] for r in await cur.fetchall()]
+
+
+async def add_banned_word(word: str, added_by: Optional[int]) -> bool:
+    """Añade una palabra o combinación. Devuelve True si se añadió (False si ya existía)."""
+    w = word.lower().strip()
+    if not w:
+        return False
+    async with get_db() as db:
+        cur = await db.execute(
+            "INSERT OR IGNORE INTO banned_words (word, added_by) VALUES (?, ?)",
+            (w, added_by),
+        )
+        await db.commit()
+        return cur.rowcount > 0
+
+
+async def remove_banned_word(word: str) -> bool:
+    w = word.lower().strip()
+    async with get_db() as db:
+        cur = await db.execute("DELETE FROM banned_words WHERE word = ?", (w,))
+        await db.commit()
+        return cur.rowcount > 0
+
+
+async def count_banned_words() -> int:
+    async with get_db() as db:
+        cur = await db.execute("SELECT COUNT(*) AS n FROM banned_words")
+        row = await cur.fetchone()
+        return int(row["n"] or 0)

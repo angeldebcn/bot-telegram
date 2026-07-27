@@ -57,6 +57,8 @@ async def get_group_roles(chat_id: int) -> dict:
         "is_staff_group": 0,
         "applies_rules": 1,
         "applies_sanctions": 1,
+        "filter_words": 0,
+        "block_forwards": 0,
     }
 
 
@@ -65,7 +67,8 @@ async def set_group_flag(chat_id: int, flag: str, value: int) -> None:
     Cambia un flag de rol de un grupo.
     flag ∈ {is_verified_group, is_staff_group, applies_rules, applies_sanctions}
     """
-    valid = {"is_verified_group", "is_staff_group", "applies_rules", "applies_sanctions"}
+    valid = {"is_verified_group", "is_staff_group", "applies_rules",
+             "applies_sanctions", "filter_words", "block_forwards"}
     if flag not in valid:
         raise ValueError(f"flag inválido: {flag}")
     await ensure_group(chat_id)
@@ -175,3 +178,15 @@ async def list_staff() -> list[dict]:
             "SELECT user_id, username, full_name FROM staff ORDER BY created_at"
         )
         return [dict(r) for r in await cur.fetchall()]
+
+
+async def group_filters_words(chat_id: int) -> bool:
+    """True si en este grupo se filtran las palabras prohibidas."""
+    roles = await get_group_roles(chat_id)
+    return bool(roles.get("filter_words", 0))
+
+
+async def group_blocks_forwards(chat_id: int) -> bool:
+    """True si en este grupo se bloquean los reenviados con remitente visible."""
+    roles = await get_group_roles(chat_id)
+    return bool(roles.get("block_forwards", 0))
