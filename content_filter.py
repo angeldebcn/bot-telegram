@@ -133,21 +133,27 @@ async def check_message(message: Message, bot: Bot) -> bool:
             return True
 
     # --- 2. FILTRO DE PALABRAS ---
+    # Solo se aplica a publicaciones CON foto o vídeo (el pie de foto/vídeo).
+    # Las frases sueltas de solo texto NO se filtran: lo reportable de verdad
+    # es una imagen/vídeo explícito con palabras fuertes, no una frase suelta.
+    # Esto además deja libres a los clientes, que suelen escribir solo texto.
     if await roles_db.group_filters_words(chat_id):
-        text = message.text or message.caption or ""
-        if text:
-            banned = await _get_words()
-            found = _find_banned_word(text, banned)
-            if found:
-                await _delete_and_warn(
-                    message, bot,
-                    "🚫 {mention}, tu publicación se ha eliminado porque contiene una "
-                    "palabra no permitida.\n\n"
-                    "Usa una palabra parecida o censúrala con <b>*</b> o números "
-                    "(por ejemplo: p*lla, c0ño). Tu publicación no cuenta, "
-                    "puedes volver a subir.",
-                )
-                return True
+        has_media = bool(message.photo or message.video or message.animation)
+        if has_media:
+            text = message.caption or ""
+            if text:
+                banned = await _get_words()
+                found = _find_banned_word(text, banned)
+                if found:
+                    await _delete_and_warn(
+                        message, bot,
+                        "🚫 {mention}, tu publicación se ha eliminado porque contiene una "
+                        "palabra no permitida.\n\n"
+                        "Usa una palabra parecida o censúrala con <b>*</b> o números "
+                        "(por ejemplo: p*lla, c0ño). Tu publicación no cuenta, "
+                        "puedes volver a subir.",
+                    )
+                    return True
 
     return False
 
