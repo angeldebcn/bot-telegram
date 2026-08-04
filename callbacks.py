@@ -1036,13 +1036,22 @@ async def cb_close(cb: CallbackQuery, bot: Bot) -> None:
 async def cb_refresh_groups(cb: CallbackQuery, bot: Bot) -> None:
     """
     Actualiza la lista de grupos: comprueba en cuáles sigue el bot de verdad
-    y quita los que ya no existen o de los que fue expulsado. Así no aparecen
-    grupos eliminados.
+    y quita los que ya no existen o de los que fue expulsado.
+
+    Distingue entre:
+    - Errores que significan "el grupo ya no está" (NotFound, Forbidden,
+      BadRequest de chat inexistente) -> se BORRA el grupo.
+    - Errores temporales (red, servidor, rate limit) -> se CONSERVA el grupo.
     """
     from stats import list_bot_chats, remove_bot_chat
     from builders import group_selector
     from permissions import is_admin
     from license_helpers import is_owner
+    from aiogram.exceptions import (
+        TelegramNotFound, TelegramForbiddenError, TelegramBadRequest,
+        TelegramNetworkError, TelegramServerError, TelegramRetryAfter,
+        TelegramMigrateToChat,
+    )
 
     await cb.answer("🔄 Comprobando grupos…")
 
@@ -1051,20 +1060,38 @@ async def cb_refresh_groups(cb: CallbackQuery, bot: Bot) -> None:
     owner = is_owner(user_id)
 
     vivos = []
+    bot_id = bot.id if hasattr(bot, "id") else None
     for chat in chats:
         cid = chat["chat_id"]
-        # Comprobar si el bot sigue en el grupo intentando acceder a él
         try:
             info = await bot.get_chat(cid)
-            # Actualizar el título por si cambió
             titulo = getattr(info, "title", None) or chat.get("chat_title")
             chat["chat_title"] = titulo
+            # Verificación extra: ¿el bot sigue siendo MIEMBRO del grupo?
+            # Si fue expulsado o el grupo está muerto, su estado será 'left'
+            # o 'kicked', o dará error -> quitar el grupo.
+            try:
+                me = await bot.get_me()
+                member = await bot.get_chat_member(cid, me.id)
+                estado = getattr(member, "status", None)
+                if estado in ("left", "kicked", "banned"):
+                    await remove_bot_chat(cid)
+                    continue
+            except (TelegramNotFound, TelegramForbiddenError, TelegramBadRequest):
+                await remove_bot_chat(cid)
+                continue
+            except Exception:
+                pass  # si falla la comprobación de miembro, seguir con get_chat OK
             vivos.append(chat)
-        except (TelegramBadRequest, TelegramForbiddenError):
-            # El bot ya no está aquí (grupo borrado o expulsado): quitarlo
+        except TelegramMigrateToChat:
             await remove_bot_chat(cid)
+        except (TelegramNotFound, TelegramForbiddenError):
+            await remove_bot_chat(cid)
+        except TelegramBadRequest:
+            await remove_bot_chat(cid)
+        except (TelegramNetworkError, TelegramServerError, TelegramRetryAfter):
+            vivos.append(chat)
         except Exception:
-            # Ante cualquier otro error, conservar el grupo (no borrar por si acaso)
             vivos.append(chat)
 
     # Filtrar a los que el usuario puede configurar
@@ -1083,11 +1110,11 @@ async def cb_refresh_groups(cb: CallbackQuery, bot: Bot) -> None:
 
     quitados = len(chats) - len(vivos)
     if not accesibles:
-        await _safe_edit(
-            cb,
-            "🤖 No estoy en ningún grupo configurable ahora mismo.\n\n"
-            "Añádeme a tus grupos y hazme administrador.",
-        )
+        msg = "🤖 No estoy en ningún grupo configurable ahora mismo.\n\n"
+        if quitados > 0:
+            msg += f"✅ Quité {quitados} grupo(s) donde ya no estoy.\n\n"
+        msg += "Añádeme a tus grupos y hazme administrador."
+        await _safe_edit(cb, msg)
         return
 
     encabezado = "🤖 <b>Selecciona el grupo a configurar</b>\n\n"
