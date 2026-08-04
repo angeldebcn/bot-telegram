@@ -1032,6 +1032,74 @@ async def cb_close(cb: CallbackQuery, bot: Bot) -> None:
 
 
 # === SELECTOR DE GRUPO (privado) ===
+@router.callback_query(F.data == "refreshg")
+async def cb_refresh_groups(cb: CallbackQuery, bot: Bot) -> None:
+    """
+    Actualiza la lista de grupos: comprueba en cuáles sigue el bot de verdad
+    y quita los que ya no existen o de los que fue expulsado. Así no aparecen
+    grupos eliminados.
+    """
+    from stats import list_bot_chats, remove_bot_chat
+    from builders import group_selector
+    from permissions import is_admin
+    from license_helpers import is_owner
+
+    await cb.answer("🔄 Comprobando grupos…")
+
+    chats = await list_bot_chats()
+    user_id = cb.from_user.id if cb.from_user else None
+    owner = is_owner(user_id)
+
+    vivos = []
+    for chat in chats:
+        cid = chat["chat_id"]
+        # Comprobar si el bot sigue en el grupo intentando acceder a él
+        try:
+            info = await bot.get_chat(cid)
+            # Actualizar el título por si cambió
+            titulo = getattr(info, "title", None) or chat.get("chat_title")
+            chat["chat_title"] = titulo
+            vivos.append(chat)
+        except (TelegramBadRequest, TelegramForbiddenError):
+            # El bot ya no está aquí (grupo borrado o expulsado): quitarlo
+            await remove_bot_chat(cid)
+        except Exception:
+            # Ante cualquier otro error, conservar el grupo (no borrar por si acaso)
+            vivos.append(chat)
+
+    # Filtrar a los que el usuario puede configurar
+    accesibles = []
+    for chat in vivos:
+        if chat.get("chat_type") not in ("group", "supergroup"):
+            continue
+        if owner:
+            accesibles.append(chat)
+            continue
+        try:
+            if await is_admin(bot, chat["chat_id"], user_id):
+                accesibles.append(chat)
+        except Exception:
+            continue
+
+    quitados = len(chats) - len(vivos)
+    if not accesibles:
+        await _safe_edit(
+            cb,
+            "🤖 No estoy en ningún grupo configurable ahora mismo.\n\n"
+            "Añádeme a tus grupos y hazme administrador.",
+        )
+        return
+
+    encabezado = "🤖 <b>Selecciona el grupo a configurar</b>\n\n"
+    if quitados > 0:
+        encabezado += f"✅ Lista actualizada. Quité {quitados} grupo(s) donde ya no estoy.\n\n"
+    else:
+        encabezado += "✅ Lista actualizada. Todos los grupos siguen activos.\n\n"
+    encabezado += "Estos son los grupos donde estoy y eres administrador:"
+
+    await _safe_edit(cb, encabezado, group_selector(accesibles))
+
+
 @router.callback_query(F.data.startswith("selg:"))
 async def cb_select_group(cb: CallbackQuery, bot: Bot) -> None:
     chat_id = int(cb.data.split(":")[1])

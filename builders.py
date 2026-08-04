@@ -412,6 +412,7 @@ def group_selector(chats: list[dict]) -> InlineKeyboardMarkup:
     for chat in chats:
         title = (chat.get("chat_title") or f"Grupo {chat['chat_id']}")[:40]
         rows.append([_btn(f"📍 {title}", f"selg:{chat['chat_id']}")])
+    rows.append([_btn("🔄 Actualizar lista de grupos", "refreshg")])
     rows.append([_close()])
     return InlineKeyboardMarkup(inline_keyboard=rows)
 
