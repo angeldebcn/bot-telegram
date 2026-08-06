@@ -77,19 +77,118 @@ def _report_args(message: Message) -> Optional[str]:
     return parts[1] if len(parts) > 1 else None
 
 
+def _extract_mentioned_user(message: Message):
+    """
+    Extrae el usuario de una mención por nombre clicable (text_mention).
+    IMPORTANTE: solo se usa cuando NO hay un @usuario escrito en el texto.
+    Si la staff escribió "@alguien", eso manda (ver _resolve_reported_user),
+    porque una text_mention "fantasma" del autocompletado podría apuntar a
+    otra persona y causar baneos equivocados.
+    """
+    entities = message.entities or message.caption_entities or []
+    for ent in entities:
+        if getattr(ent, "type", None) == "text_mention" and getattr(ent, "user", None):
+            return ent.user
+    return None
+
+
+def _has_at_mention(message: Message) -> bool:
+    """True si en el texto hay un @usuario escrito (entity tipo 'mention')."""
+    entities = message.entities or message.caption_entities or []
+    for ent in entities:
+        if getattr(ent, "type", None) == "mention":
+            return True
+    # Por si acaso: también detectar un @ escrito en el texto aunque Telegram
+    # no lo marcara como entity (raro, pero seguro)
+    raw = message.text or message.caption or ""
+    return "@" in raw
+
+
+def _first_at_username(message: Message) -> Optional[str]:
+    """Devuelve el primer @usuario escrito en el texto (con @), o None."""
+    entities = message.entities or message.caption_entities or []
+    raw = message.text or message.caption or ""
+    for ent in entities:
+        if getattr(ent, "type", None) == "mention":
+            return raw[ent.offset: ent.offset + ent.length]
+    return None
+
+
+def _reason_after_mention(message: Message, args: str) -> str:
+    """Extrae la razón que va después del nombre mencionado (text_mention)."""
+    raw = message.text or message.caption or ""
+    entities = message.entities or message.caption_entities or []
+    for ent in entities:
+        if getattr(ent, "type", None) == "text_mention" and getattr(ent, "user", None):
+            end = ent.offset + ent.length
+            after = raw[end:].strip()
+            if after:
+                return after
+    parts = args.strip().split(maxsplit=1) if args else []
+    return parts[1].strip() if len(parts) > 1 else ""
+
+
 async def _resolve_reported_user(
     bot: Bot, message: Message, args: Optional[str],
 ) -> tuple[Optional[int], Optional[str], Optional[str], Optional[str], Optional[str]]:
     """
     Resuelve a quién se reporta.
     Devuelve (user_id, username, full_name, reason, error).
+
+    Orden de prioridad (pensado para EVITAR baneos a la persona equivocada):
+    1. Reply: el reportado es el autor del mensaje respondido. Lo más seguro.
+    2. @usuario ESCRITO: si la staff escribió "@alguien", eso MANDA. Se resuelve
+       ese @ concreto (BD o get_chat). Esto evita el bug de una text_mention
+       "fantasma" del autocompletado que apunte a otra persona.
+    3. Mención por nombre clicable (text_mention) SOLO si no hay @ escrito:
+       cuando de verdad tocaron un nombre sin @. Trae el id exacto.
+    4. ID numérico.
     """
-    # Reply -> el reportado es el autor del mensaje respondido
+    # 1. Reply -> el reportado es el autor del mensaje respondido
     if message.reply_to_message and message.reply_to_message.from_user:
         u = message.reply_to_message.from_user
         await cache_user(message.chat.id, u.id, u.username, u.full_name)
         reason = args.strip() if args else ""
         return u.id, u.username, u.full_name, reason, None
+
+    tokens = args.strip().split(maxsplit=1) if args else []
+    target_token = tokens[0] if tokens else ""
+    reason = tokens[1] if len(tokens) > 1 else ""
+
+    # 2. @usuario ESCRITO manda (aunque haya una text_mention fantasma)
+    at_username = _first_at_username(message)
+    if at_username is None and target_token.startswith("@"):
+        at_username = target_token
+    if at_username:
+        found = await sanctions_db.resolve_username_global(at_username)
+        if found:
+            return (found["user_id"], found.get("username"),
+                    found.get("full_name"), reason, None)
+        # Fallback estilo GroupHelp: preguntar a Telegram por el @usuario.
+        try:
+            chat = await bot.get_chat(at_username)
+            if chat and getattr(chat, "id", None):
+                await cache_user(message.chat.id, chat.id,
+                                 getattr(chat, "username", None),
+                                 getattr(chat, "full_name", None) or getattr(chat, "first_name", None))
+                return (chat.id, getattr(chat, "username", None),
+                        getattr(chat, "full_name", None) or getattr(chat, "first_name", None),
+                        reason, None)
+        except (TelegramBadRequest, TelegramForbiddenError):
+            pass
+        return None, None, None, None, (
+            f"❌ No consigo identificar a <b>{at_username}</b>.\n\n"
+            "Telegram no me deja resolver ese @usuario. Para reportarle:\n"
+            "• Responde a un mensaje suyo con <code>/reporte razón</code>, o\n"
+            "• Usa su ID numérico (lo da @userinfobot)."
+        )
+
+    # 3. Mención por nombre clicable SOLO si no había @ escrito
+    mentioned = _extract_mentioned_user(message)
+    if mentioned is not None:
+        await cache_user(message.chat.id, mentioned.id, mentioned.username, mentioned.full_name)
+        reason = _reason_after_mention(message, args) if args else ""
+        return mentioned.id, mentioned.username, mentioned.full_name, reason, None
 
     if not args:
         return None, None, None, None, (
@@ -97,24 +196,7 @@ async def _resolve_reported_user(
             "(foto/vídeo), o responde a un mensaje suyo con <code>/reporte razón</code>."
         )
 
-    tokens = args.strip().split(maxsplit=1)
-    target_token = tokens[0]
-    reason = tokens[1] if len(tokens) > 1 else ""
-
-    # @username
-    if target_token.startswith("@"):
-        found = await sanctions_db.resolve_username_global(target_token)
-        if found:
-            return (found["user_id"], found.get("username"),
-                    found.get("full_name"), reason, None)
-        return None, None, None, None, (
-            f"❌ No encuentro a <b>{target_token}</b> en ningún grupo donde yo esté.\n\n"
-            "Para poder reportarle:\n"
-            "• Responde a un mensaje suyo con <code>/reporte razón</code>, o\n"
-            "• Usa su ID numérico (lo da @userinfobot)."
-        )
-
-    # ID numérico
+    # 4. ID numérico
     if target_token.lstrip("-").isdigit():
         uid = int(target_token)
         info = await sanctions_db.get_sanctioned_user_info(uid)
@@ -129,8 +211,8 @@ async def _resolve_reported_user(
             return uid, None, None, reason, None
 
     return None, None, None, None, (
-        "❌ No entendí a quién reportas. Usa @usuario, un ID, o responde a un "
-        "mensaje suyo."
+        "❌ No entendí a quién reportas. Escribe su @usuario, su ID, o responde "
+        "a un mensaje suyo."
     )
 
 

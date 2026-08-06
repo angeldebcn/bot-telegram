@@ -29,7 +29,7 @@ from typing import Optional
 
 from aiogram import Bot, F, Router
 from aiogram.enums import ChatType
-from aiogram.exceptions import TelegramBadRequest
+from aiogram.exceptions import TelegramBadRequest, TelegramForbiddenError
 from aiogram.filters import Command
 from aiogram.types import Message
 
@@ -126,6 +126,20 @@ def _extract_mentioned_user(message: Message):
     return None
 
 
+def _first_at_username(message: Message) -> Optional[str]:
+    """
+    Devuelve el primer @usuario ESCRITO en el texto (entity tipo 'mention'),
+    o None. Se usa para dar prioridad a lo que el staff escribe con @ sobre
+    una text_mention "fantasma" del autocompletado que apunte a otra persona.
+    """
+    entities = message.entities or message.caption_entities or []
+    raw = message.text or message.caption or ""
+    for ent in entities:
+        if getattr(ent, "type", None) == "mention":
+            return raw[ent.offset: ent.offset + ent.length]
+    return None
+
+
 async def _resolve_target_global(
     bot: Bot, message: Message, args: Optional[str],
 ) -> tuple[Optional[int], Optional[str], Optional[str], Optional[str], Optional[str]]:
@@ -133,11 +147,12 @@ async def _resolve_target_global(
     Resuelve a quién va dirigida la sanción, de forma GLOBAL.
     Devuelve (user_id, username, full_name, reason, error).
 
-    Orden de resolución:
-    - Reply: saca el usuario del mensaje respondido.
-    - Mención por nombre (text_mention): cuando tocas el nombre en la lista y
-      sale en azul sin @. Trae el id directamente.
-    - @username: busca global (todos los grupos).
+    Orden de resolución (pensado para EVITAR sancionar a la persona equivocada):
+    - Reply: saca el usuario del mensaje respondido. Lo más seguro.
+    - @usuario ESCRITO: si el staff escribió "@alguien", eso MANDA. Evita el bug
+      de una text_mention "fantasma" del autocompletado que apunte a otra persona.
+    - Mención por nombre (text_mention) SOLO si no hay @ escrito: cuando de verdad
+      tocaron un nombre sin @. Trae el id directo.
     - id numérico.
     """
     # 1. Reply -> el target es el autor del mensaje respondido
@@ -147,47 +162,52 @@ async def _resolve_target_global(
         reason = args.strip() if args else ""
         return u.id, u.username, u.full_name, reason, None
 
-    # 2. Mención por nombre clicable (text_mention) -> trae el id directo
-    mentioned = _extract_mentioned_user(message)
-    if mentioned is not None:
-        await cache_user(message.chat.id, mentioned.id, mentioned.username, mentioned.full_name)
-        # La razón es todo lo que va después del nombre mencionado.
-        # El nombre mencionado ocupa parte del texto; para sacar la razón,
-        # quitamos la primera "palabra-token" de args igual que con @usuario.
-        reason = ""
-        if args:
-            # Si el arg empieza por @, quitar ese token; si no, el nombre puede
-            # tener varias palabras, así que usamos la longitud de la entity.
-            reason = _reason_after_mention(message, args)
-        return mentioned.id, mentioned.username, mentioned.full_name, reason, None
-
-    if not args:
-        return None, None, None, None, (
-            "❌ Responde al mensaje de la persona, menciónalo tocando su nombre, "
-            "o escribe el comando seguido de @usuario o su ID y luego la razón.\n\n"
-            "Ejemplo: <code>/warngrave @fulanito insultó a una modelo</code>"
-        )
-
-    tokens = args.strip().split(maxsplit=1)
-    target_token = tokens[0]
+    tokens = args.strip().split(maxsplit=1) if args else []
+    target_token = tokens[0] if tokens else ""
     reason = tokens[1] if len(tokens) > 1 else ""
 
-    # 3. @username
-    if target_token.startswith("@"):
-        # Buscar global (todos los grupos)
-        found = await sanctions_db.resolve_username_global(target_token)
+    # 2. @usuario ESCRITO manda (aunque haya una text_mention fantasma)
+    at_username = _first_at_username(message)
+    if at_username is None and target_token.startswith("@"):
+        at_username = target_token
+    if at_username:
+        found = await sanctions_db.resolve_username_global(at_username)
         if found:
             return (
                 found["user_id"], found.get("username"),
                 found.get("full_name"), reason, None,
             )
+        # Fallback estilo GroupHelp: preguntar a Telegram por el @usuario.
+        try:
+            chat = await bot.get_chat(at_username)
+            if chat and getattr(chat, "id", None):
+                await cache_user(message.chat.id, chat.id,
+                                 getattr(chat, "username", None),
+                                 getattr(chat, "full_name", None) or getattr(chat, "first_name", None))
+                return (chat.id, getattr(chat, "username", None),
+                        getattr(chat, "full_name", None) or getattr(chat, "first_name", None),
+                        reason, None)
+        except (TelegramBadRequest, TelegramForbiddenError):
+            pass
         return None, None, None, None, (
-            f"❌ No encuentro a <b>{target_token}</b> en ningún grupo donde yo esté.\n\n"
-            "Telegram no me deja buscar a alguien solo por @ si nunca lo he visto. "
-            "Soluciones:\n"
+            f"❌ No consigo identificar a <b>{at_username}</b>.\n\n"
+            "Telegram no me deja resolver ese @usuario. Soluciones:\n"
             "• Responde a un mensaje suyo con el comando.\n"
-            "• O toca su nombre para mencionarlo (sale en azul).\n"
             "• O usa su ID numérico (lo da @userinfobot)."
+        )
+
+    # 3. Mención por nombre clicable (text_mention) SOLO si no había @ escrito
+    mentioned = _extract_mentioned_user(message)
+    if mentioned is not None:
+        await cache_user(message.chat.id, mentioned.id, mentioned.username, mentioned.full_name)
+        reason = _reason_after_mention(message, args) if args else ""
+        return mentioned.id, mentioned.username, mentioned.full_name, reason, None
+
+    if not args:
+        return None, None, None, None, (
+            "❌ Responde al mensaje de la persona, escribe su @usuario, o su ID "
+            "y luego la razón.\n\n"
+            "Ejemplo: <code>/warngrave @fulanito insultó a una modelo</code>"
         )
 
     # 4. ID numérico
