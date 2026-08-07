@@ -126,6 +126,32 @@ def _extract_mentioned_user(message: Message):
     return None
 
 
+def _is_real_reply(message: Message) -> bool:
+    """
+    True solo si el mensaje es una respuesta REAL a otra persona.
+
+    ⚠️ BUG CRÍTICO QUE ESTO ARREGLA:
+    En los grupos con temas (foros), Telegram marca TODOS los mensajes de un
+    hilo como si fueran "respuesta" al mensaje que creó ese tema. Como el tema
+    lo creó el dueño del grupo, el bot sancionaba a esa persona ignorando el
+    @usuario o el ID escrito en el comando.
+    """
+    r = getattr(message, "reply_to_message", None)
+    if not r or not getattr(r, "from_user", None):
+        return False
+    if getattr(r, "forum_topic_created", None) is not None:
+        return False
+    for campo in ("forum_topic_edited", "forum_topic_closed",
+                  "forum_topic_reopened", "general_forum_topic_hidden",
+                  "general_forum_topic_unhidden"):
+        if getattr(r, campo, None) is not None:
+            return False
+    thread_id = getattr(message, "message_thread_id", None)
+    if thread_id is not None and getattr(r, "message_id", None) == thread_id:
+        return False
+    return True
+
+
 def _first_at_username(message: Message) -> Optional[str]:
     """
     Devuelve el primer @usuario ESCRITO en el texto (entity tipo 'mention'),
@@ -155,8 +181,9 @@ async def _resolve_target_global(
       tocaron un nombre sin @. Trae el id directo.
     - id numérico.
     """
-    # 1. Reply -> el target es el autor del mensaje respondido
-    if message.reply_to_message and message.reply_to_message.from_user:
+    # 1. Reply REAL -> el target es el autor del mensaje respondido
+    # (en foros se descarta la "falsa respuesta" al mensaje raíz del tema)
+    if _is_real_reply(message):
         u = message.reply_to_message.from_user
         await cache_user(message.chat.id, u.id, u.username, u.full_name)
         reason = args.strip() if args else ""
@@ -263,7 +290,9 @@ async def _delete_command_msg(bot: Bot, message: Message) -> None:
     ser la prueba de la infracción: el insulto, el spam, etc).
     """
     # 1. Borrar el mensaje al que se respondió (la infracción)
-    if message.reply_to_message:
+    #    OJO: en foros, message.reply_to_message puede ser el mensaje raíz del
+    #    tema (no una respuesta real). No hay que borrarlo nunca.
+    if _is_real_reply(message):
         try:
             await bot.delete_message(
                 message.chat.id, message.reply_to_message.message_id,
@@ -406,7 +435,7 @@ async def cmd_mute(message: Message, bot: Bot) -> None:
     # Para /mute necesitamos: target + duración + razón
     # Si es reply: primera palabra de args es la duración, resto la razón
     # Si es @/id: primera palabra el target, segunda la duración, resto razón
-    if message.reply_to_message and message.reply_to_message.from_user:
+    if _is_real_reply(message):
         u = message.reply_to_message.from_user
         await cache_user(message.chat.id, u.id, u.username, u.full_name)
         uid, username, full_name = u.id, u.username, u.full_name

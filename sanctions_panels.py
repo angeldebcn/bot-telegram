@@ -38,6 +38,28 @@ import roles_db
 from sanctions_text import format_points_status, format_time_left
 
 logger = logging.getLogger(__name__)
+
+def _is_real_reply(message) -> bool:
+    """
+    True solo si es una respuesta REAL. En foros, Telegram marca los mensajes
+    del hilo como "respuesta" al mensaje raíz del tema; eso NO es una respuesta
+    real y causaba que se apuntara a quien creó el tema.
+    """
+    r = getattr(message, "reply_to_message", None)
+    if not r or not getattr(r, "from_user", None):
+        return False
+    if getattr(r, "forum_topic_created", None) is not None:
+        return False
+    for campo in ("forum_topic_edited", "forum_topic_closed",
+                  "forum_topic_reopened", "general_forum_topic_hidden",
+                  "general_forum_topic_unhidden"):
+        if getattr(r, campo, None) is not None:
+            return False
+    thread_id = getattr(message, "message_thread_id", None)
+    if thread_id is not None and getattr(r, "message_id", None) == thread_id:
+        return False
+    return True
+
 router = Router(name="sanctions_panels")
 
 # Cuántas fichas por página
@@ -245,7 +267,7 @@ async def cmd_buscar(message: Message, bot: Bot) -> None:
     username = None
     full_name = None
 
-    if message.reply_to_message and message.reply_to_message.from_user:
+    if _is_real_reply(message):
         u = message.reply_to_message.from_user
         uid, username, full_name = u.id, u.username, u.full_name
     elif args:

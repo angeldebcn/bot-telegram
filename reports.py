@@ -128,6 +128,43 @@ def _reason_after_mention(message: Message, args: str) -> str:
     return parts[1].strip() if len(parts) > 1 else ""
 
 
+def _is_real_reply(message: Message) -> bool:
+    """
+    True solo si el mensaje es una respuesta REAL a otra persona.
+
+    ⚠️ BUG CRÍTICO QUE ESTO ARREGLA:
+    En los grupos con temas (foros), Telegram marca TODOS los mensajes de un
+    hilo como si fueran "respuesta" al mensaje que creó ese tema. Como el tema
+    lo creó el dueño del grupo, el bot creía que se estaba reportando/sancionando
+    a esa persona, ignorando el @usuario o el ID que se escribía.
+
+    Aquí detectamos ese caso y lo descartamos:
+    - El mensaje respondido es el de creación del tema (forum_topic_created).
+    - O su message_id coincide con el id del hilo (es la raíz del tema).
+    - O es un mensaje de servicio del foro (renombrado, cerrado, etc.).
+    """
+    r = getattr(message, "reply_to_message", None)
+    if not r or not getattr(r, "from_user", None):
+        return False
+
+    # Mensaje de creación del tema -> NO es una respuesta real
+    if getattr(r, "forum_topic_created", None) is not None:
+        return False
+    # Otros mensajes de servicio del foro
+    for campo in ("forum_topic_edited", "forum_topic_closed",
+                  "forum_topic_reopened", "general_forum_topic_hidden",
+                  "general_forum_topic_unhidden"):
+        if getattr(r, campo, None) is not None:
+            return False
+
+    # La raíz de un tema tiene message_id == message_thread_id
+    thread_id = getattr(message, "message_thread_id", None)
+    if thread_id is not None and getattr(r, "message_id", None) == thread_id:
+        return False
+
+    return True
+
+
 async def _resolve_reported_user(
     bot: Bot, message: Message, args: Optional[str],
 ) -> tuple[Optional[int], Optional[str], Optional[str], Optional[str], Optional[str]]:
@@ -135,17 +172,15 @@ async def _resolve_reported_user(
     Resuelve a quién se reporta.
     Devuelve (user_id, username, full_name, reason, error).
 
-    Orden de prioridad (pensado para EVITAR baneos a la persona equivocada):
-    1. Reply: el reportado es el autor del mensaje respondido. Lo más seguro.
-    2. @usuario ESCRITO: si la staff escribió "@alguien", eso MANDA. Se resuelve
-       ese @ concreto (BD o get_chat). Esto evita el bug de una text_mention
-       "fantasma" del autocompletado que apunte a otra persona.
-    3. Mención por nombre clicable (text_mention) SOLO si no hay @ escrito:
-       cuando de verdad tocaron un nombre sin @. Trae el id exacto.
+    Orden de prioridad (pensado para EVITAR reportar a la persona equivocada):
+    1. Reply REAL: el reportado es el autor del mensaje respondido. Ojo: en
+       foros se descarta la "falsa respuesta" al mensaje raíz del tema.
+    2. @usuario ESCRITO: si la staff escribió "@alguien", eso MANDA.
+    3. Mención por nombre clicable (text_mention) SOLO si no hay @ escrito.
     4. ID numérico.
     """
-    # 1. Reply -> el reportado es el autor del mensaje respondido
-    if message.reply_to_message and message.reply_to_message.from_user:
+    # 1. Reply REAL -> el reportado es el autor del mensaje respondido
+    if _is_real_reply(message):
         u = message.reply_to_message.from_user
         await cache_user(message.chat.id, u.id, u.username, u.full_name)
         reason = args.strip() if args else ""
