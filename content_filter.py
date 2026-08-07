@@ -113,6 +113,18 @@ async def check_message(message: Message, bot: Bot) -> bool:
         return False
     user = message.from_user
 
+    # --- 0. ALIANZAS GLOBALES ---
+    # Una alianza (dueño de otro grupo aliado) está exenta de TODO, pero solo
+    # puede publicar en los grupos que tenga permitidos.
+    import alianzas_global
+    if await alianzas_global.is_global_alianza(user.id):
+        if not await alianzas_global.can_post_in(user.id, chat_id):
+            # Publica donde NO debe: borrar y avisar (aviso permanente)
+            await _avisar_grupo_incorrecto(message, bot, user)
+            return True
+        # Puede publicar aquí: exenta de filtros de palabras y reenviados
+        return False
+
     # --- 1. BLOQUEO DE REENVIADOS ---
     if await roles_db.group_blocks_forwards(chat_id):
         if _is_visible_forward(message):
@@ -228,3 +240,38 @@ async def _delete_and_warn(message: Message, bot: Bot, template: str) -> None:
                 pass
         else:
             logger.debug("No se pudo avisar del filtro en %s: %s", message.chat.id, e)
+
+
+async def _avisar_grupo_incorrecto(message: Message, bot: Bot, user) -> None:
+    """
+    Una alianza ha publicado en un grupo donde NO tiene permiso.
+    Se borra la publicación y se le avisa. Aviso PERMANENTE (no se autodestruye).
+    """
+    # 1. Borrar la publicación
+    try:
+        await bot.delete_message(message.chat.id, message.message_id)
+    except (TelegramBadRequest, TelegramForbiddenError):
+        pass
+
+    mention = _mention_html(user)
+    texto = (
+        f"🤝 {mention}, tu publicación se ha eliminado porque <b>este no es uno "
+        f"de los grupos asignados a tu alianza</b>."
+    )
+
+    # 2. Publicar el aviso (permanente) en el mismo hilo si es un foro
+    thread_id = getattr(message, "message_thread_id", None)
+    is_topic = getattr(message, "is_topic_message", False)
+    kwargs = {"disable_web_page_preview": True}
+    if thread_id is not None and is_topic:
+        kwargs["message_thread_id"] = thread_id
+    try:
+        await bot.send_message(message.chat.id, texto, **kwargs)
+    except (TelegramBadRequest, TelegramForbiddenError):
+        if "message_thread_id" in kwargs:
+            try:
+                await bot.send_message(
+                    message.chat.id, texto, disable_web_page_preview=True,
+                )
+            except (TelegramBadRequest, TelegramForbiddenError):
+                pass

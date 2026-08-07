@@ -68,10 +68,15 @@ async def can_delete_messages(bot: Bot, chat_id: int, user_id: int) -> bool:
 async def is_exempt(bot: Bot, chat_id: int, user_id: int) -> bool:
     """
     True si la usuaria está exenta de las 3 reglas:
+    - Es una ALIANZA GLOBAL (dueño de otro grupo aliado), O
+    - Está en alianzas de este grupo (sistema antiguo, por grupo), O
     - Es admin del grupo, O
-    - Está en alianzas, O
     - Es un bot (is_bot se chequea fuera)
     """
+    # Alianza global: exenta en todos los grupos
+    import alianzas_global
+    if await alianzas_global.is_global_alianza(user_id):
+        return True
     if await is_alianza(chat_id, user_id):
         return True
     if await is_admin(bot, chat_id, user_id):

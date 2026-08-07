@@ -208,28 +208,46 @@ async def cmd_help(message: Message, bot: Bot) -> None:
 
 
 # ============== /freespam ==============
-@router.message(Command("freespam"))
+@router.message(Command("freespam", "alianza", "addalianza"))
 async def cmd_freespam(message: Message, bot: Bot) -> None:
     if not await _check_admin_in_group(message, bot):
         return
     args = _command_args(message)
-    user_id, username, _full, error = await _resolve_target_user(bot, message, args)
+    user_id, username, full_name, error = await _resolve_target_user(bot, message, args)
     if error:
         await message.reply(error)
         return
     if not user_id:
         await message.reply(es.ERR_USER_NOT_FOUND)
         return
+
+    import alianzas_global
     mention = safe_username(username, user_id)
-    added = await alianzas_db.add_alianza(message.chat.id, user_id, username)
+    added = await alianzas_global.add_global_alianza(
+        user_id, username, full_name, added_by=message.from_user.id,
+    )
+    # Mantener también la alianza del grupo actual (compatibilidad)
+    await alianzas_db.add_alianza(message.chat.id, user_id, username)
+
     if added:
-        await message.reply(es.OK_ALIANZA_ADDED.format(mention=mention))
+        await message.reply(
+            f"🤝 <b>{mention} añadido como ALIANZA</b>\n\n"
+            "✅ Exento de las 3 reglas (cola, cooldown, anti-duplicado)\n"
+            "✅ Exento del filtro de palabras\n"
+            "✅ Exento del bloqueo de reenviados\n"
+            "✅ Puede publicar en <b>todos</b> los grupos\n\n"
+            "⚙️ Para elegir en qué grupos puede publicar:\n"
+            "<code>/config</code> → 🤝 Alianzas"
+        )
     else:
-        await message.reply(es.OK_ALIANZA_ALREADY.format(mention=mention))
+        await message.reply(
+            f"ℹ️ {mention} ya era una alianza.\n\n"
+            "Gestiona sus grupos en <code>/config</code> → 🤝 Alianzas"
+        )
 
 
 # ============== /unfreespam ==============
-@router.message(Command("unfreespam"))
+@router.message(Command("unfreespam", "quitaralianza", "delalianza"))
 async def cmd_unfreespam(message: Message, bot: Bot) -> None:
     if not await _check_admin_in_group(message, bot):
         return
@@ -241,10 +259,17 @@ async def cmd_unfreespam(message: Message, bot: Bot) -> None:
     if not user_id:
         await message.reply(es.ERR_USER_NOT_FOUND)
         return
+
+    import alianzas_global
     mention = safe_username(username, user_id)
-    removed = await alianzas_db.remove_alianza(message.chat.id, user_id)
-    if removed:
-        await message.reply(es.OK_ALIANZA_REMOVED.format(mention=mention))
+    removed_global = await alianzas_global.remove_global_alianza(user_id)
+    removed_local = await alianzas_db.remove_alianza(message.chat.id, user_id)
+
+    if removed_global or removed_local:
+        await message.reply(
+            f"🤝 <b>{mention} ya no es una alianza.</b>\n\n"
+            "Vuelve a estar sujeto a todas las reglas y filtros."
+        )
     else:
         await message.reply(es.OK_ALIANZA_NOT_FOUND.format(mention=mention))
 

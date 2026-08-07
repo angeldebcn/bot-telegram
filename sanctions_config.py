@@ -92,6 +92,7 @@ def _short_title(title: Optional[str], chat_id: int) -> str:
 def _main_config_menu() -> InlineKeyboardMarkup:
     return InlineKeyboardMarkup(inline_keyboard=[
         [InlineKeyboardButton(text="🏷️ Roles de grupos", callback_data="cfg:groups")],
+        [InlineKeyboardButton(text="🤝 Alianzas", callback_data="cfg:ali")],
         [InlineKeyboardButton(text="🚫 Palabras prohibidas", callback_data="cfg:words")],
         [InlineKeyboardButton(text="👮 Gestionar staff", callback_data="cfg:staff")],
         [InlineKeyboardButton(text="❌ Cerrar", callback_data="cfg:close")],
@@ -616,3 +617,145 @@ async def cmd_delpalabra(message: Message, bot: Bot) -> None:
         await message.reply(f"✅ Quitada de la lista: <code>{palabra}</code>")
     else:
         await message.reply(f"ℹ️ <code>{palabra}</code> no estaba en la lista.")
+
+
+# ===========================================================================
+# SECCIÓN: ALIANZAS (dueños de otros grupos aliados)
+# ===========================================================================
+async def _alianzas_menu() -> tuple[str, InlineKeyboardMarkup]:
+    import alianzas_global
+    alianzas = await alianzas_global.list_global_alianzas()
+
+    if not alianzas:
+        text = (
+            "🤝 <b>ALIANZAS</b>\n\n"
+            "No hay ninguna alianza todavía.\n\n"
+            "Para añadir una, ve al grupo y usa:\n"
+            "<code>/freespam @usuario</code>\n"
+            "(o responde a un mensaje suyo)\n\n"
+            "Una alianza queda exenta de las 3 reglas, del filtro de palabras "
+            "y del bloqueo de reenviados, y por defecto puede publicar en "
+            "todos los grupos."
+        )
+        kb = InlineKeyboardMarkup(inline_keyboard=[
+            [InlineKeyboardButton(text="🔙 Volver", callback_data="cfg:main")],
+        ])
+        return text, kb
+
+    text = (
+        "🤝 <b>ALIANZAS</b>\n\n"
+        f"Tienes <b>{len(alianzas)}</b> alianza(s).\n\n"
+        "Pulsa una para elegir en qué grupos puede publicar."
+    )
+    rows = []
+    for a in alianzas[:30]:
+        nombre = a.get("full_name") or (f"@{a['username']}" if a.get("username") else str(a["user_id"]))
+        # Contar en cuántos grupos tiene prohibido publicar
+        permisos = await alianzas_global.get_permisos(a["user_id"])
+        bloqueados = sum(1 for v in permisos.values() if not v)
+        etiqueta = f"🤝 {nombre[:28]}"
+        if bloqueados:
+            etiqueta += f" ({bloqueados} 🚫)"
+        rows.append([InlineKeyboardButton(
+            text=etiqueta, callback_data=f"cfg:ali1:{a['user_id']}",
+        )])
+    rows.append([InlineKeyboardButton(text="🔙 Volver", callback_data="cfg:main")])
+    return text, InlineKeyboardMarkup(inline_keyboard=rows)
+
+
+async def _alianza_grupos_menu(user_id: int) -> tuple[str, InlineKeyboardMarkup]:
+    """Panel de una alianza: en qué grupos puede publicar."""
+    import alianzas_global
+    a = await alianzas_global.get_alianza(user_id)
+    if not a:
+        return "❌ Esa alianza ya no existe.", InlineKeyboardMarkup(
+            inline_keyboard=[[InlineKeyboardButton(text="🔙 Volver", callback_data="cfg:ali")]]
+        )
+
+    nombre = a.get("full_name") or (f"@{a['username']}" if a.get("username") else str(user_id))
+    chats = await list_bot_chats()
+    grupos = [c for c in chats if c.get("chat_type") in ("group", "supergroup")]
+    permisos = await alianzas_global.get_permisos(user_id)
+
+    permitidos = sum(1 for g in grupos if permisos.get(g["chat_id"], True))
+    text = (
+        f"🤝 <b>{nombre}</b>\n"
+        f"🆔 <code>{user_id}</code>\n\n"
+        f"Puede publicar en <b>{permitidos}</b> de {len(grupos)} grupos.\n\n"
+        "Pulsa para permitir ✅ o bloquear 🚫 cada grupo:"
+    )
+
+    rows = []
+    for g in grupos[:40]:
+        allowed = permisos.get(g["chat_id"], True)
+        icono = "✅" if allowed else "🚫"
+        titulo = (g.get("chat_title") or f"Grupo {g['chat_id']}")[:30]
+        rows.append([InlineKeyboardButton(
+            text=f"{icono} {titulo}",
+            callback_data=f"cfg:alig:{user_id}:{g['chat_id']}",
+        )])
+    rows.append([InlineKeyboardButton(
+        text="♻️ Permitir en TODOS", callback_data=f"cfg:aliall:{user_id}",
+    )])
+    rows.append([InlineKeyboardButton(text="🔙 Volver a alianzas", callback_data="cfg:ali")])
+    return text, InlineKeyboardMarkup(inline_keyboard=rows)
+
+
+@router.callback_query(F.data == "cfg:ali")
+async def cb_config_alianzas(cb: CallbackQuery, bot: Bot) -> None:
+    if not _is_owner(cb.from_user.id):
+        await cb.answer()
+        return
+    text, kb = await _alianzas_menu()
+    try:
+        await cb.message.edit_text(text, reply_markup=kb, disable_web_page_preview=True)
+    except TelegramBadRequest:
+        pass
+    await cb.answer()
+
+
+@router.callback_query(F.data.startswith("cfg:ali1:"))
+async def cb_config_alianza_detalle(cb: CallbackQuery, bot: Bot) -> None:
+    if not _is_owner(cb.from_user.id):
+        await cb.answer()
+        return
+    user_id = int(cb.data.split(":")[2])
+    text, kb = await _alianza_grupos_menu(user_id)
+    try:
+        await cb.message.edit_text(text, reply_markup=kb, disable_web_page_preview=True)
+    except TelegramBadRequest:
+        pass
+    await cb.answer()
+
+
+@router.callback_query(F.data.startswith("cfg:alig:"))
+async def cb_config_alianza_toggle(cb: CallbackQuery, bot: Bot) -> None:
+    if not _is_owner(cb.from_user.id):
+        await cb.answer()
+        return
+    import alianzas_global
+    parts = cb.data.split(":")
+    user_id, chat_id = int(parts[2]), int(parts[3])
+    nuevo = await alianzas_global.toggle_permiso(user_id, chat_id)
+    text, kb = await _alianza_grupos_menu(user_id)
+    try:
+        await cb.message.edit_text(text, reply_markup=kb, disable_web_page_preview=True)
+    except TelegramBadRequest:
+        pass
+    await cb.answer("✅ Puede publicar aquí" if nuevo else "🚫 Bloqueado en este grupo")
+
+
+@router.callback_query(F.data.startswith("cfg:aliall:"))
+async def cb_config_alianza_all(cb: CallbackQuery, bot: Bot) -> None:
+    if not _is_owner(cb.from_user.id):
+        await cb.answer()
+        return
+    import alianzas_global
+    user_id = int(cb.data.split(":")[2])
+    await alianzas_global.allow_all(user_id)
+    text, kb = await _alianza_grupos_menu(user_id)
+    try:
+        await cb.message.edit_text(text, reply_markup=kb, disable_web_page_preview=True)
+    except TelegramBadRequest:
+        pass
+    await cb.answer("♻️ Ahora puede publicar en todos los grupos")

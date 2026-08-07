@@ -91,6 +91,8 @@ async def setup_commands(bot: Bot) -> None:
 async def main() -> None:
     await init_db()
     await init_sanctions_db()
+    from alianzas_global import init_alianzas_global
+    await init_alianzas_global()
     from sanctions_db import seed_default_banned_words
     n = await seed_default_banned_words()
     if n:
